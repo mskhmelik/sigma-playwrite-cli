@@ -9,7 +9,7 @@ import { fail } from "./errors.js";
 import { markOwned, type OwnedWorkbook } from "./ledger.js";
 import { ensureEditor } from "./place.js";
 import { findWorkbook } from "./sigma-api.js";
-import { workbookEditor } from "./workbook-editor.js";
+import { sourceLookup, workbookEditor } from "./workbook-editor.js";
 
 const COMMANDS = [
   "navigate",
@@ -181,13 +181,9 @@ export function parseAction(command: string, args: string[], inherited?: { url: 
   };
 }
 
-const lookup = {
-  async control(): Promise<string> {
-    fail("reading another control is not available in this editor");
-  },
-  async column(): Promise<string> {
-    fail("reading a column is not available in this editor");
-  },
+type Lookup = {
+  control: (handle: string) => Promise<string>;
+  column: (column: string) => Promise<string>;
 };
 
 function mutates(step: Step): boolean {
@@ -195,7 +191,7 @@ function mutates(step: Step): boolean {
   return step.kind !== "navigate" && step.kind !== "open-modal";
 }
 
-async function execute(editor: Editor, step: Step): Promise<void> {
+async function execute(editor: Editor, step: Step, lookup: Lookup): Promise<void> {
   try {
     if (step.kind === "navigate") {
       await navigateTo(editor, step.destination);
@@ -242,23 +238,31 @@ async function execute(editor: Editor, step: Step): Promise<void> {
       console.log(`delete-row ${step.title}`);
       return;
     }
-    await runSequence(step.steps.map((child) => () => execute(editor, child)));
+    await runSequence(step.steps.map((child) => () => execute(editor, child, lookup)));
   } catch (error) {
     if (error instanceof Error && error.name === "Exit") throw error;
     fail(error instanceof Error ? error.message : String(error));
   }
 }
 
+/** Runs the step. Marks the workbook only after a mutating step succeeds. */
+export async function performAction(editor: Editor, step: Step, lookup: Lookup, mark: () => void): Promise<void> {
+  await execute(editor, step, lookup);
+  if (mutates(step)) mark();
+}
+
 export async function runAction(command: string, args: string[]): Promise<void> {
   const parsed = parseAction(command, args);
   await withChrome(async (page) => {
     await ensureEditor(page, parsed.url, parsed.page);
-    if (mutates(parsed.step)) {
-      const segment = pathSegmentFromUrl(page.url());
-      const identity: Omit<OwnedWorkbook, "markedAt"> = { ...findWorkbook(segment), pathSegment: segment };
-      markOwned(identity);
-    }
-    await execute(workbookEditor(page), parsed.step);
+    const mark = mutates(parsed.step)
+      ? () => {
+          const segment = pathSegmentFromUrl(page.url());
+          const identity: Omit<OwnedWorkbook, "markedAt"> = { ...findWorkbook(segment), pathSegment: segment };
+          markOwned(identity);
+        }
+      : () => {};
+    await performAction(workbookEditor(page), parsed.step, sourceLookup(page), mark);
     console.log(page.url());
   });
 }
