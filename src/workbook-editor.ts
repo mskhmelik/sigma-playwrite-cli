@@ -1,7 +1,8 @@
-import type { Page } from "playwright";
+import type { Locator, Page } from "playwright";
 import type { Editor } from "./editor.js";
 import { fail } from "./errors.js";
 import { locateTitle } from "./edit.js";
+import { controlTitle } from "./handles.js";
 import { readModel } from "./place.js";
 
 async function pageTabs(page: Page): Promise<{ id: string; name: string; selected: boolean }[]> {
@@ -82,20 +83,31 @@ export function workbookEditor(page: Page): Editor {
     },
     async openModal(name) {
       const tabs = await pageTabs(page);
-      if (!tabs.some((tab) => tab.name === name)) throw new Error(`missing page ${JSON.stringify(name)}`);
-      fail(`Page ${JSON.stringify(name)} cannot be opened as a modal from this command.`);
+      const matches = tabs.filter((tab) => tab.name === name);
+      if (matches.length !== 1) throw new Error(`missing page ${JSON.stringify(name)}`);
+      const id = matches[0].id;
+      await page.locator(`[data-testid="page-item-${id}"]`).click();
+      await page.locator(`[data-layout-id="layout-body-${id}"]`).waitFor({ state: "visible", timeout: 15000 });
     },
-    async insertRow() {
-      fail("row write refused");
+    async insertRow(title) {
+      await editPublishedTable(page, title, async (host) => {
+        await insertOnePublishedRow(page, host);
+      });
     },
-    async insertRows() {
-      fail("row write refused");
+    async insertRows(title, rows) {
+      await editPublishedTable(page, title, async (host) => {
+        await pastePublishedRows(page, host, rows);
+      });
     },
-    async editCell() {
-      fail("row write refused");
+    async editCell(title, column, value) {
+      await editPublishedTable(page, title, async (host) => {
+        await typePublishedCell(page, host, column, value);
+      });
     },
-    async deleteRow() {
-      fail("row write refused");
+    async deleteRow(title) {
+      await editPublishedTable(page, title, async (host) => {
+        await deleteOnePublishedRow(page, host);
+      });
     },
     async addPage(name) {
       await createPage(page, name);
@@ -301,15 +313,6 @@ async function createButton(page: Page, title: string): Promise<void> {
   }
 }
 
-async function insertActionText(page: Page): Promise<string> {
-  return page.evaluate(() => {
-    const heading = [...document.querySelectorAll("h3")].find((el) => /insert row into/i.test(el.textContent || ""));
-    let node: HTMLElement | null = heading instanceof HTMLElement ? heading.parentElement : null;
-    while (node && !(node.innerText || "").includes("Set column values")) node = node.parentElement;
-    return node?.innerText ?? "";
-  });
-}
-
 async function saveButtonInsert(
   page: Page,
   button: string,
@@ -317,7 +320,7 @@ async function saveButtonInsert(
   column: string,
   controlTitle: string,
 ): Promise<void> {
-  void table;
+  const target = await locateTitle(page, table);
   const found = await locateTitle(page, button);
   await page.locator(`[data-selectable="${found.id}"], [data-testid="element-${found.id}"]`).first().click();
   await page.getByRole("tab", { name: "Actions" }).click();
@@ -326,13 +329,26 @@ async function saveButtonInsert(
   await page.getByRole("option", { name: "Insert row", exact: true }).click();
   const heading = page.getByRole("heading", { name: /insert row into/i });
   await heading.waitFor({ state: "visible", timeout: 5000 });
-  const text = await insertActionText(page);
-  if (!text.includes(column)) fail(`Insert row did not target column ${JSON.stringify(column)}.`);
+  const dialog = await insertRowDialog(page, heading);
+  await selectIntoTable(page, dialog, table, target.id);
+  try {
+    await dialog.getByText(column, { exact: true }).first().waitFor({ state: "visible", timeout: 5000 });
+  } catch {
+    fail(`Insert row did not target column ${JSON.stringify(column)}.`);
+  }
   const handle = controlTitle.replace(/^v\./, "");
-  if (!text.includes(controlTitle) && !new RegExp(`\\b${handle}\\b`, "i").test(text)) {
+  if (!(await chipShows(dialog, controlTitle)) && !(await chipShows(dialog, handle))) {
+    const row = columnRow(dialog, column);
+    await chooseRowOption(page, row, ["Control"]);
+    await chooseRowOption(page, row, [controlTitle, handle]);
+  }
+  if (!(await chipShows(dialog, column))) fail(`Insert row did not target column ${JSON.stringify(column)}.`);
+  if (!(await chipShows(dialog, controlTitle)) && !(await chipShows(dialog, handle))) {
     fail(`Insert row did not take its value from ${JSON.stringify(controlTitle)}.`);
   }
-  await page.getByRole("button", { name: "Close", exact: true }).last().click();
+  const close = dialog.getByRole("button", { name: "Close", exact: true });
+  if ((await close.count()) > 0) await close.first().click();
+  else await page.getByRole("button", { name: "Close", exact: true }).last().click();
   try {
     await heading.waitFor({ state: "hidden", timeout: 5000 });
   } catch {
@@ -362,4 +378,458 @@ async function publishWorkbook(page: Page): Promise<void> {
   } catch {
     fail("Publish did not finish.");
   }
+}
+
+const gridSelector = "[role='grid'], [role='table']";
+
+function buttonLabel(aria: string | null, text: string): string {
+  return (aria || text).replace(/\s+/g, " ").trim();
+}
+
+async function currentLayout(page: Page): Promise<Locator> {
+  const id = await page.evaluate(() => {
+    const selected =
+      document.querySelector('[data-testid^="page-item-"][data-selected="true"]') ??
+      document.querySelector('[data-testid^="page-item-"][aria-selected="true"]');
+    return (selected?.getAttribute("data-testid") || "").replace(/^page-item-/, "");
+  });
+  if (!id) return page.locator("body");
+  return page.locator(`[data-layout-id="layout-body-${id}"]`);
+}
+
+async function readControlValue(page: Page, id: string): Promise<string> {
+  const host = page.locator(`[data-selectable="${id}"]`);
+  const field = host.locator("input, textarea, [contenteditable='true'], [contenteditable='']").first();
+  try {
+    await field.waitFor({ state: "visible", timeout: 5000 });
+  } catch {
+    fail(`Control ${id} has no value field.`);
+  }
+  const editable = await field.getAttribute("contenteditable");
+  if (editable !== null) return ((await field.innerText()) || "").replace(/\u00a0/g, " ").trim();
+  return field.inputValue();
+}
+
+async function readColumnValue(page: Page, column: string): Promise<string> {
+  const root = await currentLayout(page);
+  const headers = root.getByRole("columnheader");
+  const count = await headers.count();
+  for (let i = 0; i < count; i++) {
+    const header = headers.nth(i);
+    const text = ((await header.innerText()) || "").trim().split("\n")[0]?.trim();
+    if (text !== column) continue;
+    const grid = root.locator(gridSelector).filter({ has: header }).last();
+    const localHeaders = grid.getByRole("columnheader");
+    const localCount = await localHeaders.count();
+    let index = -1;
+    for (let h = 0; h < localCount; h++) {
+      const line = ((await localHeaders.nth(h).innerText()) || "").trim().split("\n")[0]?.trim();
+      if (line === column) {
+        index = h;
+        break;
+      }
+    }
+    if (index < 0) continue;
+    const rows = grid.getByRole("row");
+    const rowCount = await rows.count();
+    for (let r = 0; r < rowCount; r++) {
+      const row = rows.nth(r);
+      if ((await row.getByRole("columnheader").count()) > 0) continue;
+      const cells = row.getByRole("gridcell").or(row.getByRole("cell"));
+      if ((await cells.count()) <= index) continue;
+      const cell = cells.nth(index);
+      const input = cell.locator("input, textarea").first();
+      if ((await input.count()) > 0) return input.inputValue();
+      return ((await cell.innerText()) || "").trim();
+    }
+    fail(`Column ${JSON.stringify(column)} has no value.`);
+  }
+  fail(`Column ${JSON.stringify(column)} was not found.`);
+}
+
+/** Reads `--from-handle` and `--column` for set-control. Static values do not use this. */
+export function sourceLookup(page: Page): {
+  control: (handle: string) => Promise<string>;
+  column: (column: string) => Promise<string>;
+} {
+  return {
+    async control(handle) {
+      const title = controlTitle("variable", handle);
+      const found = await locateTitle(page, title);
+      return readControlValue(page, found.id);
+    },
+    column: (column) => readColumnValue(page, column),
+  };
+}
+
+async function openPublishMenu(page: Page): Promise<void> {
+  const publish = page.getByRole("button", { name: "Publish", exact: true }).first();
+  try {
+    await publish.waitFor({ state: "visible", timeout: 5000 });
+  } catch {
+    fail("Publish menu was not found.");
+  }
+  let scope = publish.locator("xpath=..");
+  for (let depth = 0; depth < 4; depth++) {
+    const buttons = scope.locator("xpath=./button | ./*[@role='button']");
+    const count = await buttons.count();
+    const others: Locator[] = [];
+    let sawPublish = false;
+    for (let i = 0; i < count; i++) {
+      const button = buttons.nth(i);
+      const label = buttonLabel(await button.getAttribute("aria-label"), (await button.innerText()) || "");
+      if (label === "Publish") {
+        sawPublish = true;
+        continue;
+      }
+      others.push(button);
+    }
+    if (sawPublish && others.length === 1) {
+      const arrow = others[0];
+      if (arrow) {
+        await arrow.click();
+        return;
+      }
+    }
+    if (sawPublish && others.length > 1) {
+      for (const button of others) {
+        const popup = await button.getAttribute("aria-haspopup");
+        if (popup === "menu" || popup === "true" || popup === "listbox") {
+          await button.click();
+          return;
+        }
+      }
+    }
+    scope = scope.locator("xpath=..");
+  }
+  fail("Publish menu was not found.");
+}
+
+async function goToPublishedVersion(page: Page): Promise<void> {
+  const path = new URL(page.url()).pathname.replace(/\/$/, "");
+  if (!path.endsWith("/edit")) {
+    await page.locator('[data-testid="workbook-canvas"]').waitFor({ state: "visible", timeout: 30000 });
+    return;
+  }
+  await openPublishMenu(page);
+  const item = page.getByRole("menuitem", { name: "Go to published version", exact: true });
+  const option = page.getByRole("option", { name: "Go to published version", exact: true });
+  const target = (await item.count()) > 0 ? item.first() : option.first();
+  try {
+    await target.waitFor({ state: "visible", timeout: 5000 });
+  } catch {
+    fail("Go to published version was not found.");
+  }
+  await target.click();
+  try {
+    await page.waitForURL((url) => !url.pathname.replace(/\/$/, "").endsWith("/edit"), { timeout: 30000 });
+    await page.locator('[data-testid="workbook-canvas"]').waitFor({ state: "visible", timeout: 30000 });
+  } catch {
+    fail("Published version did not open.");
+  }
+}
+
+async function showNamedPage(page: Page, name: string): Promise<void> {
+  const tabs = await pageTabs(page);
+  const match = tabs.find((tab) => tab.name === name);
+  if (!match || match.selected) return;
+  await page.locator(`[data-testid="page-item-${match.id}"]`).click();
+  await page.locator(`[data-layout-id="layout-body-${match.id}"]`).waitFor({ state: "visible", timeout: 15000 });
+}
+
+async function clickEditData(page: Page, host: Locator): Promise<void> {
+  await host.click();
+  const local = host.getByRole("button", { name: "Edit data", exact: true });
+  const button = (await local.count()) > 0 ? local.first() : page.getByRole("button", { name: "Edit data", exact: true }).first();
+  if ((await button.count()) < 1) fail("Edit data was not found.");
+  if (await button.isDisabled()) fail("Edit data is not available.");
+  await button.click();
+}
+
+async function clickSave(page: Page, host: Locator): Promise<void> {
+  const local = host.getByRole("button", { name: "Save", exact: true });
+  const button = (await local.count()) > 0 ? local.first() : page.getByRole("button", { name: "Save", exact: true }).first();
+  try {
+    await button.waitFor({ state: "visible", timeout: 10000 });
+  } catch {
+    fail("Save was not found.");
+  }
+  if (await button.isDisabled()) fail("Save is not available.");
+  await button.click();
+}
+
+async function editPublishedTable(page: Page, title: string, edit: (host: Locator) => Promise<void>): Promise<void> {
+  const found = await locateTitle(page, title);
+  const selected = (await pageTabs(page)).find((tab) => tab.selected)?.name;
+  await goToPublishedVersion(page);
+  if (selected) await showNamedPage(page, selected);
+  const host = page.locator(`[data-selectable="${found.id}"], [data-testid="element-${found.id}"]`).first();
+  try {
+    await host.waitFor({ state: "visible", timeout: 15000 });
+  } catch {
+    fail(`Input table ${JSON.stringify(title)} is not on the published page.`);
+  }
+  await clickEditData(page, host);
+  await edit(host);
+  await clickSave(page, host);
+}
+
+async function firstDataRow(host: Locator): Promise<Locator | undefined> {
+  const grid = host.locator(gridSelector).first();
+  if ((await grid.count()) < 1) return undefined;
+  const rows = grid.getByRole("row");
+  const count = await rows.count();
+  for (let i = 0; i < count; i++) {
+    const row = rows.nth(i);
+    if ((await row.getByRole("columnheader").count()) > 0) continue;
+    const cells = row.getByRole("gridcell").or(row.getByRole("cell"));
+    if ((await cells.count()) > 0) return row;
+  }
+  return undefined;
+}
+
+async function chooseMenu(page: Page, item: string): Promise<void> {
+  const menuItem = page.getByRole("menuitem", { name: item, exact: true });
+  try {
+    await menuItem.first().waitFor({ state: "visible", timeout: 5000 });
+  } catch {
+    fail(`Menu item ${JSON.stringify(item)} was not found.`);
+  }
+  await menuItem.first().click();
+}
+
+async function insertOnePublishedRow(page: Page, host: Locator): Promise<void> {
+  const row = await firstDataRow(host);
+  if (row) {
+    await row.click();
+    await row.click({ button: "right" });
+    const below = page.getByRole("menuitem", { name: "Insert 1 row below", exact: true });
+    if ((await below.count()) > 0) {
+      await below.first().click();
+      return;
+    }
+    await page.keyboard.press("Escape");
+  }
+  const add = host.locator("[aria-label='Add row']");
+  const addButton = host.getByRole("button", { name: "Add row", exact: true });
+  if ((await addButton.count()) > 0) {
+    await addButton.first().click();
+    return;
+  }
+  if ((await add.count()) > 0) {
+    await add.first().click();
+    return;
+  }
+  fail("Menu item \"Insert 1 row below\" was not found.");
+}
+
+async function pastePublishedRows(page: Page, host: Locator, rows: string[][]): Promise<void> {
+  if (rows.length === 0) fail("insert-rows has no rows to paste.");
+  if (rows.length > 2000 || rows.some((row) => row.length > 25)) {
+    fail("Paste accepts at most 2,000 rows and 25 columns.");
+  }
+  const grid = host.locator(gridSelector).first();
+  const cell = grid.getByRole("gridcell").or(grid.getByRole("cell")).first();
+  if ((await cell.count()) < 1) fail("Input table has no cell to paste into.");
+  await cell.click();
+  const tsv = rows.map((row) => row.join("\t")).join("\n");
+  try {
+    await page.evaluate(async (text) => {
+      await navigator.clipboard.writeText(text);
+    }, tsv);
+  } catch {
+    fail("Could not copy rows to the clipboard for Paste.");
+  }
+  await cell.click({ button: "right" });
+  const paste = page.getByRole("menuitem", { name: "Paste", exact: true });
+  if ((await paste.count()) > 0) {
+    await paste.first().click();
+    return;
+  }
+  await page.keyboard.press("Meta+V");
+}
+
+async function typePublishedCell(page: Page, host: Locator, column: string, value: string): Promise<void> {
+  const grid = host.locator(gridSelector).first();
+  const headers = grid.getByRole("columnheader");
+  const count = await headers.count();
+  let index = -1;
+  for (let i = 0; i < count; i++) {
+    const line = ((await headers.nth(i).innerText()) || "").trim().split("\n")[0]?.trim();
+    if (line === column) {
+      index = i;
+      break;
+    }
+  }
+  if (index < 0) fail(`Column ${JSON.stringify(column)} was not found.`);
+  const row = await firstDataRow(host);
+  if (!row) fail(`Column ${JSON.stringify(column)} has no cell.`);
+  const cells = row.getByRole("gridcell").or(row.getByRole("cell"));
+  if ((await cells.count()) <= index) fail(`Column ${JSON.stringify(column)} has no cell.`);
+  const cell = cells.nth(index);
+  await cell.click();
+  const field = page.locator("input:focus, textarea:focus, [contenteditable='true']:focus").first();
+  if ((await field.count()) > 0) await field.fill(value);
+  else if (value) await page.keyboard.insertText(value);
+  else await page.keyboard.press("Backspace");
+  await page.keyboard.press("Enter");
+}
+
+async function deleteOnePublishedRow(page: Page, host: Locator): Promise<void> {
+  const row = await firstDataRow(host);
+  if (!row) fail("Input table has no row to delete.");
+  await row.click();
+  await row.click({ button: "right" });
+  await chooseMenu(page, "Delete 1 row");
+}
+
+async function insertRowDialog(page: Page, heading: Locator): Promise<Locator> {
+  const byHeading = page.getByRole("dialog").filter({ has: heading });
+  if ((await byHeading.count()) >= 1) return byHeading.last();
+  const byText = page.getByRole("dialog").filter({ hasText: /insert row into/i });
+  if ((await byText.count()) >= 1) return byText.last();
+  fail("Insert row dialog was not found.");
+}
+
+function intoShowsTable(shown: string): boolean {
+  const value = shown.replace(/\s+/g, " ").trim();
+  if (!value) return false;
+  if (/^into$/i.test(value)) return false;
+  if (/^open options into$/i.test(value)) return false;
+  if (/^insert row into$/i.test(value)) return false;
+  if (/^select\b/i.test(value)) return false;
+  return true;
+}
+
+async function intoFieldText(dialog: Locator): Promise<string> {
+  const open = dialog.getByRole("button", { name: /open options into/i });
+  if ((await open.count()) > 0) {
+    const text = ((await open.first().innerText()) || "").trim();
+    if (text) return text;
+  }
+  const combo = dialog.getByRole("combobox", { name: /into/i });
+  if ((await combo.count()) > 0) return ((await combo.first().innerText()) || "").trim();
+  const named = dialog.getByRole("button", { name: /^into\b/i });
+  if ((await named.count()) > 0) return ((await named.first().innerText()) || "").trim();
+  return "";
+}
+
+async function openIntoList(dialog: Locator): Promise<void> {
+  const open = dialog.getByRole("button", { name: /open options into/i });
+  if ((await open.count()) > 0) {
+    await open.first().click();
+    return;
+  }
+  const combo = dialog.getByRole("combobox", { name: /^into$/i });
+  if ((await combo.count()) > 0) {
+    await combo.first().click();
+    return;
+  }
+  const named = dialog.getByRole("button", { name: /^into$/i });
+  if ((await named.count()) > 0) {
+    await named.first().click();
+    return;
+  }
+  fail("Insert row has no Into field.");
+}
+
+async function sheetLabel(page: Page, id: string): Promise<string> {
+  return page.evaluate((elementId) => {
+    const host =
+      document.querySelector(`[data-selectable="${elementId}"]`) ??
+      document.querySelector(`[data-testid="element-${elementId}"]`);
+    if (!(host instanceof HTMLElement)) return "";
+    const nodes: Element[] = [host, ...host.querySelectorAll("[data-testid]")];
+    for (const node of nodes) {
+      const match = /^sheet-(.+)$/.exec(node.getAttribute("data-testid") || "");
+      if (match?.[1]) return match[1];
+    }
+    return "";
+  }, id);
+}
+
+function sameTableLabel(shown: string, table: string, sheet: string): boolean {
+  const value = shown.replace(/\s+/g, " ").trim();
+  if (!intoShowsTable(value)) return false;
+  const first = value.split("\n")[0]?.trim() ?? value;
+  if (first === table || value === table) return true;
+  if (!sheet) return false;
+  return first === sheet || value === sheet || first.startsWith(`${sheet} (`);
+}
+
+async function selectIntoTable(page: Page, dialog: Locator, table: string, elementId: string): Promise<void> {
+  const sheet = await sheetLabel(page, elementId);
+  if (sameTableLabel(await intoFieldText(dialog), table, sheet)) return;
+  await openIntoList(dialog);
+  const list = page.getByRole("listbox");
+  const options = (await list.count()) > 0 ? list.last().getByRole("option") : page.getByRole("option");
+  try {
+    await options.first().waitFor({ state: "visible", timeout: 5000 });
+  } catch {
+    fail("Insert row Into options did not open.");
+  }
+  const count = await options.count();
+  let titleMatch = -1;
+  let idMatch = -1;
+  const names: string[] = [];
+  for (let i = 0; i < count; i++) {
+    const option = options.nth(i);
+    const name = ((await option.innerText()) || "").replace(/\s+/g, " ").trim();
+    names.push(name);
+    const firstLine = name.split(" ").length ? ((await option.innerText()) || "").trim().split("\n")[0]?.trim() : name;
+    if (sameTableLabel(name, table, sheet) || sameTableLabel(firstLine ?? "", table, sheet)) titleMatch = i;
+    if (elementId) {
+      const blob = await option.evaluate((node) => {
+        const el = node as HTMLElement;
+        return [el.id, el.getAttribute("data-id") || "", el.getAttribute("data-value") || "", el.getAttribute("aria-label") || "", el.innerText || ""].join(" ");
+      });
+      if (blob.includes(elementId)) idMatch = i;
+    }
+  }
+  const index = titleMatch >= 0 ? titleMatch : idMatch;
+  if (index < 0) {
+    fail(`Insert row Into options did not include ${JSON.stringify(table)}. Options: ${names.join(" | ") || "(none)"}`);
+  }
+  await options.nth(index).click();
+  const shown = await intoFieldText(dialog);
+  // The Into control may show the sheet name. The heading "insert row into" is not that value.
+  if (!intoShowsTable(shown) && titleMatch < 0) {
+    fail(`Insert row did not target a table. Into shows ${JSON.stringify(shown)}.`);
+  }
+}
+
+async function chipShows(scope: Locator, label: string): Promise<boolean> {
+  if (!label) return false;
+  if ((await scope.getByText(label, { exact: true }).count()) > 0) return true;
+  return (await scope.getByRole("button", { name: label, exact: true }).count()) > 0;
+}
+
+function columnRow(dialog: Locator, column: string): Locator {
+  return dialog.getByText(column, { exact: true }).first().locator("xpath=ancestor::*[.//button][1]");
+}
+
+async function chooseRowOption(page: Page, row: Locator, names: string[]): Promise<boolean> {
+  const openers = row.getByRole("button", { name: /open options|static values|^control$|^formula$/i });
+  const count = await openers.count();
+  for (let i = 0; i < count; i++) {
+    const opener = openers.nth(i);
+    const label = buttonLabel(await opener.getAttribute("aria-label"), (await opener.innerText()) || "");
+    if (/open options (action|into)/i.test(label)) continue;
+    await opener.click();
+    const options = page.getByRole("option");
+    try {
+      await options.first().waitFor({ state: "visible", timeout: 3000 });
+    } catch {
+      continue;
+    }
+    for (const name of names) {
+      const match = page.getByRole("option", { name, exact: true });
+      if ((await match.count()) > 0) {
+        await match.first().click();
+        return true;
+      }
+    }
+    await page.keyboard.press("Escape");
+  }
+  return false;
 }

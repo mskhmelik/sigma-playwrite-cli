@@ -7,6 +7,7 @@ import {
   publishWorkbook,
   saveInsertAction,
 } from "./effects/build.js";
+import type { Editor } from "./editor.js";
 import { fail } from "./errors.js";
 import { markOwned, type OwnedWorkbook } from "./ledger.js";
 import { ensureEditor } from "./place.js";
@@ -115,26 +116,33 @@ export function parseCreate(command: string, args: string[]): CreateCommand {
   fail(`Unknown command: ${command}`);
 }
 
+/** Runs the create command. Marks the workbook only after the edit succeeds. */
+export async function applyCreate(editor: Editor, parsed: CreateCommand, mark: () => void): Promise<void> {
+  try {
+    if (parsed.kind === "add-page") await addNamedPage(editor, parsed.name);
+    else if (parsed.kind === "input-table") await addEmptyInputTable(editor, parsed.title, parsed.column);
+    else if (parsed.kind === "control") await addNameControl(editor, parsed.handle);
+    else if (parsed.kind === "button") await addNamedButton(editor, parsed.title);
+    else if (parsed.kind === "set-action") {
+      await saveInsertAction(editor, parsed.title, parsed.into, parsed.column, parsed.handle);
+    } else await publishWorkbook(editor);
+  } catch (error) {
+    if (error instanceof Error && error.name === "Exit") throw error;
+    fail(error instanceof Error ? error.message : String(error));
+  }
+  mark();
+}
+
 export async function runCreate(command: string, args: string[]): Promise<void> {
   const parsed = parseCreate(command, args);
   await withChrome(async (page) => {
     await ensureEditor(page, parsed.url, parsed.page);
-    const segment = pathSegmentFromUrl(page.url());
-    const identity: Omit<OwnedWorkbook, "markedAt"> = { ...findWorkbook(segment), pathSegment: segment };
-    markOwned(identity);
     const editor = workbookEditor(page);
-    try {
-      if (parsed.kind === "add-page") await addNamedPage(editor, parsed.name);
-      else if (parsed.kind === "input-table") await addEmptyInputTable(editor, parsed.title, parsed.column);
-      else if (parsed.kind === "control") await addNameControl(editor, parsed.handle);
-      else if (parsed.kind === "button") await addNamedButton(editor, parsed.title);
-      else if (parsed.kind === "set-action") {
-        await saveInsertAction(editor, parsed.title, parsed.into, parsed.column, parsed.handle);
-      } else await publishWorkbook(editor);
-    } catch (error) {
-      if (error instanceof Error && error.name === "Exit") throw error;
-      fail(error instanceof Error ? error.message : String(error));
-    }
+    await applyCreate(editor, parsed, () => {
+      const segment = pathSegmentFromUrl(page.url());
+      const identity: Omit<OwnedWorkbook, "markedAt"> = { ...findWorkbook(segment), pathSegment: segment };
+      markOwned(identity);
+    });
     console.log(page.url());
   });
 }
