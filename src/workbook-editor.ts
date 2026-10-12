@@ -506,6 +506,11 @@ async function openPublishMenu(page: Page): Promise<void> {
 }
 
 async function goToPublishedVersion(page: Page): Promise<void> {
+  const path = new URL(page.url()).pathname.replace(/\/$/, "");
+  if (!path.endsWith("/edit")) {
+    await page.locator('[data-testid="workbook-canvas"]').waitFor({ state: "visible", timeout: 30000 });
+    return;
+  }
   await openPublishMenu(page);
   const item = page.getByRole("menuitem", { name: "Go to published version", exact: true });
   const option = page.getByRole("option", { name: "Go to published version", exact: true });

@@ -191,7 +191,7 @@ function mutates(step: Step): boolean {
   return step.kind !== "navigate" && step.kind !== "open-modal";
 }
 
-async function execute(editor: Editor, step: Step, lookup: Lookup): Promise<void> {
+async function execute(editor: Editor, step: Step, lookup: Lookup, mark: () => void): Promise<void> {
   try {
     if (step.kind === "navigate") {
       await navigateTo(editor, step.destination);
@@ -206,49 +206,55 @@ async function execute(editor: Editor, step: Step, lookup: Lookup): Promise<void
     if (step.kind === "set-control") {
       await writeControl(editor, step.handle, step.source, lookup);
       console.log(`set-control ${step.handle}`);
+      mark();
       return;
     }
     if (step.kind === "clear-control") {
       if (step.pageControls) {
         await clearEveryControl(editor, step.pageControls);
         console.log(`clear-control ${step.pageControls}`);
+        mark();
         return;
       }
       await clearOneControl(editor, step.handle ?? "");
       console.log(`clear-control ${step.handle}`);
+      mark();
       return;
     }
     if (step.kind === "insert-row") {
       await insertOneRow(editor, step.title);
       console.log(`insert-row ${step.title}`);
+      mark();
       return;
     }
     if (step.kind === "insert-rows") {
       await insertManyRows(editor, step.title, step.rows);
       console.log(`insert-rows ${step.title}`);
+      mark();
       return;
     }
     if (step.kind === "edit-cell") {
       await editOneCell(editor, step.title, step.column, step.value);
       console.log(`edit-cell ${step.title}`);
+      mark();
       return;
     }
     if (step.kind === "delete-row") {
       await deleteOneRow(editor, step.title);
       console.log(`delete-row ${step.title}`);
+      mark();
       return;
     }
-    await runSequence(step.steps.map((child) => () => execute(editor, child, lookup)));
+    await runSequence(step.steps.map((child) => () => execute(editor, child, lookup, mark)));
   } catch (error) {
     if (error instanceof Error && error.name === "Exit") throw error;
     fail(error instanceof Error ? error.message : String(error));
   }
 }
 
-/** Runs the step. Marks the workbook only after a mutating step succeeds. */
+/** Runs the step. Marks the workbook after each mutating step that succeeds. */
 export async function performAction(editor: Editor, step: Step, lookup: Lookup, mark: () => void): Promise<void> {
-  await execute(editor, step, lookup);
-  if (mutates(step)) mark();
+  await execute(editor, step, lookup, mark);
 }
 
 export async function runAction(command: string, args: string[]): Promise<void> {

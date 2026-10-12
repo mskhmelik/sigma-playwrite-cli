@@ -59,6 +59,42 @@ test("a failed insert does not mark the workbook", async () => {
   assert.equal(marks, 0);
 });
 
+test("a sequence marks each row edit that succeeds", async () => {
+  let inserts = 0;
+  const fake = {
+    async findElement(title: string) {
+      return { title, inputTable: true };
+    },
+    async insertRow() {
+      inserts += 1;
+    },
+    async editCell() {
+      throw new Error("cell edit failed");
+    },
+  };
+  let marks = 0;
+  await assert.rejects(
+    () =>
+      performAction(
+        fake as never,
+        {
+          kind: "sequence",
+          steps: [
+            { kind: "insert-row", title: "names" },
+            { kind: "edit-cell", title: "names", column: "name", value: "Ada" },
+          ],
+        },
+        lookup,
+        () => {
+          marks += 1;
+        },
+      ),
+    /cell edit failed/,
+  );
+  assert.equal(inserts, 1);
+  assert.equal(marks, 1);
+});
+
 test("navigate does not mark the workbook", async () => {
   const { editor: fake } = editor();
   let marks = 0;
