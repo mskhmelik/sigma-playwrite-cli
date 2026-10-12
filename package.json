@@ -1,0 +1,20 @@
+{
+  "name": "sigma-playwrite-cli",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "bin": {
+    "sigma-playwrite-cli": "./dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "sigma-playwrite-cli": "node dist/cli.js"
+  },
+  "dependencies": {
+    "playwright": "^1.56.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.0"
+  }
+}
