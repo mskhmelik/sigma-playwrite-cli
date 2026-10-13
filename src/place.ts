@@ -91,6 +91,31 @@ export function parseGridArea(value: string): GridArea {
   return { rowStart: nums[0], colStart: nums[1], rowEnd: nums[2], colEnd: nums[3] };
 }
 
+/** A Sigma page is 24 columns wide. A full-width element has width 24. */
+export const FULL_WIDTH = 24;
+
+export type ElementSize = { width: number; height: number };
+
+/** Width x height in grid units. `24x10` is full width and 10 rows tall. */
+export function parseSize(spec: string): ElementSize {
+  const match = spec.match(/^(\d+)\s*x\s*(\d+)$/i);
+  if (!match) throw new Error(`Bad size ${spec}; expected widthxheight, for example 24x10`);
+  const width = Number(match[1]);
+  const height = Number(match[2]);
+  if (width < 1 || height < 1) throw new Error(`Size must be at least 1x1: ${spec}`);
+  return { width, height };
+}
+
+/** Keep the current top-left. Ends stay exclusive, so width 24 from column 1 ends at 25. */
+export function applySize(current: GridArea, size: ElementSize): GridArea {
+  return {
+    rowStart: current.rowStart,
+    colStart: current.colStart,
+    rowEnd: current.rowStart + size.height,
+    colEnd: current.colStart + size.width,
+  };
+}
+
 export function parseArea(spec: string): GridArea {
   const match = spec.match(/^(\d+)\s*-\s*(\d+)\s*:\s*(\d+)\s*-\s*(\d+)$/);
   if (!match) throw new Error(`Bad span ${spec}; expected rowStart-rowEnd:colStart-colEnd`);

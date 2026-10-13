@@ -1,10 +1,27 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { orderEdgeUpdates, planPlacement, type GridArea, type PlacementStep } from "../dist/place.js";
+import { FULL_WIDTH, applySize, orderEdgeUpdates, parseSize, planPlacement, type GridArea, type PlacementStep } from "../dist/place.js";
 
 function sharesColumns(left: GridArea, right: GridArea): boolean {
   return left.colStart < right.colEnd && right.colStart < left.colEnd;
 }
+
+test("24x10 keeps the top-left and spans full width for 10 rows", () => {
+  const current: GridArea = { rowStart: 3, colStart: 1, rowEnd: 24, colEnd: 25 };
+  const size = parseSize(`${FULL_WIDTH}x10`);
+  assert.equal(size.width, 24);
+  assert.deepEqual(applySize(current, size), {
+    rowStart: 3,
+    colStart: 1,
+    rowEnd: 13,
+    colEnd: 25,
+  });
+});
+
+test("a size needs widthxheight", () => {
+  assert.throws(() => parseSize("24-10"), /expected widthxheight/);
+  assert.throws(() => parseSize("0x10"), /at least 1x1/);
+});
 
 test("an upward move beside a full-width neighbor sidesteps onto column halves", () => {
   const current: GridArea = { rowStart: 4, colStart: 1, rowEnd: 5, colEnd: 13 };

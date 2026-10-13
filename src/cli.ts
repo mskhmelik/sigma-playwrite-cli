@@ -15,6 +15,7 @@ USAGE
   sigma-playwrite-cli place --url <workbook-url> [--page <page-name>] --layout "Title A=1-19:1-25,Title B=19-39:1-13"
   sigma-playwrite-cli select --url <workbook-url> [--page <page-name>] --title <title>
   sigma-playwrite-cli size --url <workbook-url> [--page <page-name>] --title <title> --area <rowStart-rowEnd:colStart-colEnd>
+  sigma-playwrite-cli size --url <workbook-url> [--page <page-name>] --title <title> --size <widthxheight>
   sigma-playwrite-cli set --url <workbook-url> [--page <page-name>] --title <title> --set <key=value> [--set <key=value>...]
   sigma-playwrite-cli add --url <workbook-url> [--page <page-name>] --type text [--title <title>]
   sigma-playwrite-cli add-page --url <workbook-url> [--page <page-name>] --name <page>
@@ -51,7 +52,10 @@ bottom. Titles are separated by commas. A title that is missing, or a titled
 sibling left out of the list, stops the command before anything is moved.
 
 --layout and --area use exclusive grid lines: rowStart-rowEnd:colStart-colEnd.
-place moves every named title. size moves one title.
+place moves every named title. size moves one title. --size is widthxheight in
+grid units and keeps the element's current top-left. A page is 24 columns wide,
+so full width is 24. A data-page table is 24x10: from column 1 row 3 that is
+3-13:1-25. size takes --area or --size, not both.
 
 --set repeats. Keys depend on the element type. text allows content, fill
 (theme:<swatch>), padding (on or off), and color (white). color on a text
