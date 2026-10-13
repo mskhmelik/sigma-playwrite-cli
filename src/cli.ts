@@ -1,10 +1,13 @@
 #!/usr/bin/env node
+import { runAddCsv } from "./add-csv.js";
 import { isActionCommand, runAction } from "./actions.js";
 import { runArrange } from "./arrange.js";
 import { runCreate } from "./create.js";
 import { runAdd, runSelect, runSet, runSize } from "./edit.js";
 import { Exit } from "./errors.js";
 import { runPlace } from "./place.js";
+import { runRename } from "./rename.js";
+import { runSetColumn } from "./set-column.js";
 import { runApi } from "./sigma-api.js";
 
 const help = `sigma-playwrite-cli — select, size, and format Sigma workbook elements in logged-in Chrome
@@ -24,6 +27,9 @@ USAGE
   sigma-playwrite-cli add --url <workbook-url> [--page <page-name>] --type control --kind c|v --handle <name>
   sigma-playwrite-cli add --url <workbook-url> [--page <page-name>] --type control --kind c|v --handle <name> --control segmented --option <value> [--option <value>...]
   sigma-playwrite-cli add --url <workbook-url> [--page <page-name>] --type button --title <label>
+  sigma-playwrite-cli add-csv --url <workbook-url> [--page <page-name>] --file <path.csv> --title <table title> --connection <connection name>
+  sigma-playwrite-cli rename --url <workbook-url> [--page <page-name>] --title <current title> --name <new title>
+  sigma-playwrite-cli set-column --url <workbook-url> [--page <page-name>] --title <table title> --column <column name> [--column <column name>...] --set format=date
   sigma-playwrite-cli group-column --url <workbook-url> [--page <page-name>] --title <element> --column <column> --with <column already in the grouping>
   sigma-playwrite-cli add-column --url <workbook-url> [--page <page-name>] --title <element> --column <system column> [--column <system column>...]
   sigma-playwrite-cli add-column --url <workbook-url> [--page <page-name>] --title <element> --column <column> --type single-select --option <value> [--option <value>...]
@@ -100,6 +106,11 @@ the next row, 2-3:1-13, filled Warning, stretched, and closes the modal.
 style-modal does not add the if/else check. In the published view, type the
 name, press Enter, then click the button. publish is the only command that publishes.
 
+add-csv uploads a CSV as a table on Add element, Data, Table, CSV. --connection
+is required. The canvas title becomes --title, not the file name. rename changes
+one canvas title from --title to --name. set-column --set format=date shows each
+--column as a date, YYYY-MM-DD.
+
 Chrome must already be running with --remote-debugging-port=9222. This tool
 never quits Chrome.
 `;
@@ -164,6 +175,17 @@ if (command === "api") {
 } else if (command === "add" && ["input-table", "control", "button"].includes(flagValue(argv.slice(1), "type") ?? "")) {
   try {
     await runCreate(command, argv.slice(1));
+  } catch (error) {
+    if (error instanceof Exit) {
+      console.error(error.message);
+      process.exit(error.code);
+    }
+    throw error;
+  }
+} else if (command === "add-csv" || command === "rename" || command === "set-column") {
+  const run = command === "add-csv" ? runAddCsv : command === "rename" ? runRename : runSetColumn;
+  try {
+    await run(argv.slice(1));
   } catch (error) {
     if (error instanceof Exit) {
       console.error(error.message);
