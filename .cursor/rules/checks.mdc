@@ -1,0 +1,29 @@
+---
+description: If/else checks that open a modal before a write
+alwaysApply: true
+---
+
+# Check, then act
+
+A button that writes a row checks a formula first. When the check is true, open a modal. Otherwise do the write.
+
+Put one if/else on the button:
+
+- **Then:** the check is true. Open the modal.
+- **Else:** the check is false. Insert the row, or run the other normal effect.
+
+Several checks are several branches on that same if/else: if, else if, else. Each failing check opens its own modal. The last else does the write.
+
+The formula names the control by its id, which is the canvas title (`c.name` or `v.name`). A column is `[table/column]`, using the element title.
+
+- Duplicate: `IsNotNull(Lookup([names/name], [v.name], [names/name]))`
+- Empty: `IsNull([c.name])`. Several empties are `IsNull([c.a]) or IsNull([c.b])`.
+- Anything else sits in that same condition slot. The reference format check is a stored-procedure call there.
+
+`set-action --effect if-else` writes the duplicate formula. The reference Apply button uses the same Lookup: `IsNotNull(Lookup([FE - master list/ID], [c.id_item_new], [FE - master list/ID]))`.
+
+The modal button uses Close modal/drawer. Its label is sentence case, such as `I will create a new name`. The explanation sentence is left aligned, and that button sits on the next row under it.
+
+`style-modal --page <modal> --header <title> --sentence <text> --button <label>` formats that modal. Width is extra small. Show primary button, show secondary button, and show close icon are off. The sentence is `1-2:1-13`. The button is `2-3:1-13`.
+
+Remove an existing Insert row on that button before adding the if/else, or a failed check still writes the row.

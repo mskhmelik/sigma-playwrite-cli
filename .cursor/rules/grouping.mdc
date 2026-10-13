@@ -1,0 +1,16 @@
+---
+description: Add a column to an existing Sigma grouping
+alwaysApply: true
+---
+
+# Group by the same grouping
+
+When a table needs another group-by column, that column becomes a key of the grouping that already exists. It does not get a new GROUP BY.
+
+1. The first key is already in GROUP BY. On `Raw - Name products` that key is `pk_product`.
+2. Each later column is dragged onto that same group. `name_prd`, `nm_product`, `txt_event_action`, `dt_created_at`, and `nm_created_by` sit in that one GROUP BY with `pk_product`.
+3. `group-column --title <element> --column <column> --with <key already in the group>` does that drag. Repeat it once per column. A column already in the group is left there. The element does not have to be an input table.
+
+Group column and Add grouping start a second GROUP BY. Do not use them to add a key. Do not press Space on a column chip. That fullscreens the element. A synthetic pointer, an HTML5 drag, and a fiber dispatch do not move the key.
+
+The drop lands on the existing group. After the drop there is still one GROUP BY, and both names are keys of it. A new GROUP BY is a failed drop.

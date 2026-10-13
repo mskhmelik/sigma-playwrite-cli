@@ -1,0 +1,25 @@
+---
+description: Workbook titles, control ids, and table names
+alwaysApply: true
+---
+
+# Workbook names
+
+Human titles are sentence case: `Customer orders`, `Add`. Refuse a title that starts with a lowercase letter, or a word written in all capitals.
+
+A control uses one string for the canvas title and the control id. There are two kinds:
+
+- `c.<name>` is user-facing. The user can change the value. Example: `c.name`.
+- `v.<name>` is internal. The system sets the value. The user cannot change it. Example: `v.total`.
+- A click on a column that stores that row's id uses `v.id_<clicked column>_selected`. The column in the name is the one the user clicks. A click on `name` writes the row id to `v.id_name_selected`.
+- The value that overwrites a column is a `c.` control the user sets. The button writes it onto the one row in `v.id_<clicked column>_selected`. A status uses `c.status` and the `status` column. A name uses `c.name` and the `name` column.
+- Write the control id before the canvas title. Saving the control id sentence-cases the title. The title is written after that save, so the canvas still reads `v.id_name_selected`.
+
+Do not create `sys.<name>`. A text box the user fills is `c.name`, not `v.name`.
+
+Table element titles:
+
+- Backend: `BE - Customer orders`
+- Front end: `FE - Names`
+
+`BE` and `FE` stay uppercase. The name after the hyphen is sentence case. A front-end table may hide its column headers and show other text. The element title stays `FE - Names`, because commands and actions refer to that title.

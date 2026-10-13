@@ -29,6 +29,18 @@ function pageEditor(
     insertRows: record("insertRows"),
     editCell: record("editCell"),
     deleteRow: record("deleteRow"),
+    styleModalPage: async (header) => {
+      calls.push(`styleModalPage:${header}`);
+    },
+    ensureModalSentence: async (sentence) => {
+      calls.push(`ensureModalSentence:${sentence}`);
+      return "";
+    },
+    ensureModalButton: async (label) => {
+      calls.push(`ensureModalButton:${label}`);
+      return "";
+    },
+    stackModalBody: async () => {},
   };
   return { editor, calls };
 }

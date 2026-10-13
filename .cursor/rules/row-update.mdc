@@ -1,0 +1,14 @@
+---
+description: Select a row, then overwrite one column from a control
+alwaysApply: true
+---
+
+# Select a row, then overwrite a column
+
+A click stores the row id. A second control holds the new value. A button writes that value into one column of that row. The column can be status, name, or any other column on the input table.
+
+1. On select on the clicked column. Set control value from the system column Row ID (the column titled `ID`) into `v.id_<clicked column>_selected`. A click on `name` writes `v.id_name_selected`.
+2. The new value is a control the user changes, so it is `c.<name>`. Name it for the column it writes: `c.status` into `status`, `c.name` into `name`.
+3. On the button, On click, effect Update row(s). In the input table. Update row(s) by Single row. The row id comes from `v.id_<clicked column>_selected`. The column comes from the `c.` control.
+
+Run add-column when the column is new, then add the id control, then set-action on-select, then add the value control, then add the button, then set-action update-row. Publish once. Existing rows stay empty until the button writes one.
