@@ -71,11 +71,14 @@ async function writeTitle(page: Page, id: string, title: string): Promise<void> 
   await page.keyboard.press("Meta+A");
   await page.keyboard.insertText(title);
   await page.keyboard.press("Enter");
+  await page.keyboard.press("Tab");
   try {
     await page.waitForFunction(
       ({ elementId, wanted }) => {
         const node = document.querySelector(`[data-selectable="${elementId}"] [data-testid="dynamic-title"]`);
         if (!(node instanceof HTMLElement)) return false;
+        const active = document.activeElement;
+        if (active instanceof HTMLElement && node.contains(active) && active.isContentEditable) return false;
         return (node.textContent || "").trim() === wanted;
       },
       { elementId: id, wanted: title },
