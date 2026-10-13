@@ -530,7 +530,18 @@ async function closeActionDialog(page: Page, dialog: Locator, heading: Locator):
   }
 }
 
+async function actionPanelText(page: Page, button: string): Promise<string> {
+  const found = await locateTitle(page, button);
+  await page.locator(`[data-selectable="${found.id}"], [data-testid="element-${found.id}"]`).first().click();
+  await page.getByRole("tab", { name: "Actions" }).click();
+  const panel = page.getByRole("tabpanel");
+  if ((await panel.count()) < 1) return "";
+  return ((await panel.first().innerText()) || "").replace(/\s+/g, " ");
+}
+
 async function saveButtonClose(page: Page, button: string): Promise<void> {
+  const listed = await actionPanelText(page, button);
+  if (/close modal/i.test(listed)) return;
   const { heading, dialog } = await openEffect(page, button, "Close modal/drawer");
   const text = ((await dialog.innerText()) || "").toLowerCase();
   if (!text.includes("close modal")) fail("Close modal was not saved.");
@@ -581,6 +592,11 @@ async function saveButtonIfElse(
   modal: string,
   formula: string,
 ): Promise<void> {
+  const listed = await actionPanelText(page, button);
+  if (/if\s*\/\s*else/i.test(listed)) return;
+  if (/insert row/i.test(listed)) {
+    fail("Button already has Insert row. Remove it before if/else, or a failed check still writes the row.");
+  }
   const target = await locateTitle(page, table);
   const { heading, dialog } = await openEffect(page, button, "If/else");
   await fillCondition(page, dialog, formula);
@@ -595,6 +611,11 @@ async function saveButtonIfElse(
   await selectIntoTable(page, dialog, table, target.id);
   if (!(await chipShows(dialog, column))) fail(`If/else did not target column ${JSON.stringify(column)}.`);
   const handle = control.replace(/^[cv]\./, "");
+  if (!(await chipShows(dialog, control)) && !(await chipShows(dialog, handle))) {
+    const row = columnRow(dialog, column);
+    await chooseRowOption(page, row, ["Control"]);
+    await chooseRowOption(page, row, [control, handle]);
+  }
   if (!(await chipShows(dialog, control)) && !(await chipShows(dialog, handle))) {
     fail(`If/else did not take its value from ${JSON.stringify(control)}.`);
   }
