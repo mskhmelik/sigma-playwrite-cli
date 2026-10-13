@@ -215,6 +215,27 @@ test("set-action update-row without --match-handle is rejected", () => {
   assert.doesNotMatch(result.stderr, /Unknown command/);
 });
 
+test("size without --area or --size is rejected", () => {
+  const result = run(["size", "--url", url, "--title", "FCT_SALES"]);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /size requires --area or --size/);
+  assert.doesNotMatch(result.stderr, /Unknown command/);
+});
+
+test("size rejects --area and --size together", () => {
+  const result = run(["size", "--url", url, "--title", "FCT_SALES", "--area", "3-13:1-25", "--size", "24x10"]);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /not both/);
+  assert.doesNotMatch(result.stderr, /Unknown command/);
+});
+
+test("size rejects a size that is not widthxheight", () => {
+  const result = run(["size", "--url", url, "--title", "FCT_SALES", "--size", "24-10"]);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /expected widthxheight/);
+  assert.doesNotMatch(result.stderr, /Unknown command/);
+});
+
 test("group-column without --with is rejected", () => {
   const result = run(["group-column", "--url", url, "--title", "Raw - Name products", "--column", "nm_product"]);
   assert.notEqual(result.status, 0);

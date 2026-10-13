@@ -5,8 +5,11 @@ import { markOwned, type OwnedWorkbook } from "./ledger.js";
 import {
   confirmSelected,
   ensureEditor,
+  applySize,
   parseArea,
+  parseSize,
   placeArea,
+  readGridArea,
   readModel,
   selectElement,
   type ComponentInfo,
@@ -20,6 +23,7 @@ type Flags = {
   page?: string;
   title?: string;
   area?: string;
+  size?: string;
   type?: string;
   set: string[];
 };
@@ -40,7 +44,7 @@ function parseFlags(args: string[], allowed: string[]): Flags {
     if (!allowed.includes(name)) fail(`Unknown argument: ${flag}`);
     if (!value || value.startsWith("--")) fail(`${flag} needs a value`);
     if (name === "set") flags.set.push(value);
-    else if (name === "url" || name === "page" || name === "title" || name === "area" || name === "type") {
+    else if (name === "url" || name === "page" || name === "title" || name === "area" || name === "size" || name === "type") {
       if (flags[name]) fail(`Duplicate ${flag}`);
       flags[name] = value;
     }
@@ -181,14 +185,17 @@ export async function runSelect(args: string[]): Promise<void> {
 }
 
 export async function runSize(args: string[]): Promise<void> {
-  const flags = parseFlags(args, ["url", "page", "title", "area"]);
+  const flags = parseFlags(args, ["url", "page", "title", "area", "size"]);
   const url = requireUrl(flags, "size");
   if (!flags.title) fail("size requires --title");
-  if (!flags.area) fail("size requires --area");
+  if (flags.area && flags.size) fail("size takes --area or --size, not both");
+  if (!flags.area && !flags.size) fail("size requires --area or --size");
   const title = flags.title;
-  let area: GridArea;
+  let fixed: GridArea | undefined;
+  let elementSize: ReturnType<typeof parseSize> | undefined;
   try {
-    area = parseArea(flags.area);
+    if (flags.area) fixed = parseArea(flags.area);
+    if (flags.size) elementSize = parseSize(flags.size);
   } catch (error) {
     fail(error instanceof Error ? error.message : String(error));
   }
@@ -196,6 +203,7 @@ export async function runSize(args: string[]): Promise<void> {
   await withChrome(async (page) => {
     const identity = await identityFor(page, url, flags.page);
     const component = await locateTitle(page, title);
+    const area = elementSize ? applySize(await readGridArea(page, component.id), elementSize) : fixed!;
     const change = markOnFirstChange(identity);
     try {
       await placeArea(page, component.id, area, change.touch, title);
