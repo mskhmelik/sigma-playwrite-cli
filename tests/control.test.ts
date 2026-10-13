@@ -37,9 +37,16 @@ const unused = {
   },
 };
 
+test("writeControl writes a static value onto c.probe", async () => {
+  const { editor, found, set } = canvas();
+  await writeControl(editor, "c", "probe", { kind: "static", text: "north" }, unused);
+  assert.deepEqual(found, ["c.probe"]);
+  assert.deepEqual(set, [{ title: "c.probe", value: "north" }]);
+});
+
 test("writeControl writes a static value onto v.probe", async () => {
   const { editor, found, set } = canvas();
-  await writeControl(editor, "probe", { kind: "static", text: "north" }, unused);
+  await writeControl(editor, "v", "probe", { kind: "static", text: "north" }, unused);
   assert.deepEqual(found, ["v.probe"]);
   assert.deepEqual(set, [{ title: "v.probe", value: "north" }]);
 });
@@ -47,14 +54,14 @@ test("writeControl writes a static value onto v.probe", async () => {
 test("writeControl writes another control's value onto v.probe", async () => {
   const { editor, found, set } = canvas();
   const asked: string[] = [];
-  await writeControl(editor, "probe", { kind: "control", handle: "other" }, {
-    async control(handle: string) {
-      asked.push(handle);
+  await writeControl(editor, "v", "probe", { kind: "control", controlKind: "c", handle: "other" }, {
+    async control(kind: string, handle: string) {
+      asked.push(`${kind}.${handle}`);
       return "from-other";
     },
     column: unused.column,
   });
-  assert.deepEqual(asked, ["other"]);
+  assert.deepEqual(asked, ["c.other"]);
   assert.deepEqual(found, ["v.probe"]);
   assert.deepEqual(set, [{ title: "v.probe", value: "from-other" }]);
 });
@@ -62,7 +69,7 @@ test("writeControl writes another control's value onto v.probe", async () => {
 test("writeControl writes a column value onto v.probe", async () => {
   const { editor, found, set } = canvas();
   const asked: string[] = [];
-  await writeControl(editor, "probe", { kind: "column", column: "amount" }, {
+  await writeControl(editor, "v", "probe", { kind: "column", column: "amount" }, {
     control: unused.control,
     async column(column: string) {
       asked.push(column);
@@ -77,7 +84,7 @@ test("writeControl writes a column value onto v.probe", async () => {
 test("writeControl throws missing handle and does not set the control", async () => {
   const { editor, set } = canvas({ missing: true });
   await assert.rejects(
-    () => writeControl(editor, "probe", { kind: "static", text: "north" }, unused),
+    () => writeControl(editor, "v", "probe", { kind: "static", text: "north" }, unused),
     /missing handle/,
   );
   assert.deepEqual(set, []);
@@ -85,14 +92,14 @@ test("writeControl throws missing handle and does not set the control", async ()
 
 test("clearOneControl clears v.probe", async () => {
   const { editor, found, cleared } = canvas();
-  await clearOneControl(editor, "probe");
+  await clearOneControl(editor, "v", "probe");
   assert.deepEqual(found, ["v.probe"]);
   assert.deepEqual(cleared, ["v.probe"]);
 });
 
 test("clearOneControl throws missing handle and does not clear", async () => {
   const { editor, cleared } = canvas({ missing: true });
-  await assert.rejects(() => clearOneControl(editor, "probe"), /missing handle/);
+  await assert.rejects(() => clearOneControl(editor, "v", "probe"), /missing handle/);
   assert.deepEqual(cleared, []);
 });
 

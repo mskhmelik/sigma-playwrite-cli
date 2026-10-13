@@ -1,11 +1,12 @@
 import { pathSegmentFromUrl, withChrome } from "./chrome.js";
 import type { Editor, ValueSource } from "./editor.js";
 import { clearEveryControl, clearOneControl, writeControl } from "./effects/control.js";
-import { openModalPage } from "./effects/modal.js";
+import { openModalPage, styleModal } from "./effects/modal.js";
 import { navigateTo } from "./effects/navigate.js";
 import { deleteOneRow, editOneCell, insertManyRows, insertOneRow } from "./effects/rows.js";
 import { runSequence } from "./effects/sequence.js";
 import { fail } from "./errors.js";
+import { requireControlKind, type HandleKind } from "./handles.js";
 import { markOwned, type OwnedWorkbook } from "./ledger.js";
 import { ensureEditor } from "./place.js";
 import { findWorkbook } from "./sigma-api.js";
@@ -21,6 +22,7 @@ const COMMANDS = [
   "edit-cell",
   "delete-row",
   "sequence",
+  "style-modal",
 ] as const;
 
 export type ActionName = (typeof COMMANDS)[number];
@@ -32,12 +34,13 @@ export function isActionCommand(command: string): command is ActionName {
 type Step =
   | { kind: "navigate"; destination: string }
   | { kind: "open-modal"; modal: string }
-  | { kind: "set-control"; handle: string; source: ValueSource }
-  | { kind: "clear-control"; handle?: string; pageControls?: string }
+  | { kind: "set-control"; controlKind: HandleKind; handle: string; source: ValueSource }
+  | { kind: "clear-control"; controlKind?: HandleKind; handle?: string; pageControls?: string }
   | { kind: "insert-row"; title: string }
   | { kind: "insert-rows"; title: string; rows: string[][] }
   | { kind: "edit-cell"; title: string; column: string; value: string }
   | { kind: "delete-row"; title: string }
+  | { kind: "style-modal"; page: string; header: string; sentence: string; button: string }
   | { kind: "sequence"; steps: Step[] };
 
 export type ParsedAction = {
@@ -96,7 +99,10 @@ function valueSource(command: string, bag: Bag): ValueSource {
   const picked = [value, fromHandle, column].filter((item) => item !== undefined);
   if (picked.length !== 1) fail(`${command} requires --value, --from-handle, or --column`);
   if (value !== undefined) return { kind: "static", text: value };
-  if (fromHandle !== undefined) return { kind: "control", handle: fromHandle };
+  if (fromHandle !== undefined) {
+    const controlKind = requireControlKind(one(bag, "from-kind"), `${command} --from-handle`);
+    return { kind: "control", controlKind, handle: fromHandle };
+  }
   return { kind: "column", column: column ?? "" };
 }
 
@@ -119,18 +125,31 @@ export function parseAction(command: string, args: string[], inherited?: { url: 
     if (!modal) fail("open-modal requires --modal");
     return { url, page, step: { kind: "open-modal", modal } };
   }
+  if (command === "style-modal") {
+    allow(bag, ["url", "page", "header", "sentence", "button"]);
+    if (!page) fail("style-modal requires --page");
+    const header = one(bag, "header");
+    if (!header) fail("style-modal requires --header");
+    const sentence = one(bag, "sentence");
+    if (!sentence) fail("style-modal requires --sentence");
+    const button = one(bag, "button");
+    if (!button) fail("style-modal requires --button");
+    return { url, page, step: { kind: "style-modal", page, header, sentence, button } };
+  }
   if (command === "set-control") {
-    allow(bag, ["url", "page", "handle", "value", "from-handle", "column"]);
+    allow(bag, ["url", "page", "handle", "kind", "value", "from-handle", "from-kind", "column"]);
     const handle = one(bag, "handle");
     if (!handle) fail("set-control requires --handle");
-    return { url, page, step: { kind: "set-control", handle, source: valueSource("set-control", bag) } };
+    const controlKind = requireControlKind(one(bag, "kind"), "set-control");
+    return { url, page, step: { kind: "set-control", controlKind, handle, source: valueSource("set-control", bag) } };
   }
   if (command === "clear-control") {
-    allow(bag, ["url", "page", "handle", "page-controls"]);
+    allow(bag, ["url", "page", "handle", "kind", "page-controls"]);
     const handle = one(bag, "handle");
     const pageControls = one(bag, "page-controls");
     if (!!handle === !!pageControls) fail("clear-control requires --handle");
-    return { url, page, step: { kind: "clear-control", handle, pageControls } };
+    const controlKind = handle ? requireControlKind(one(bag, "kind"), "clear-control") : undefined;
+    return { url, page, step: { kind: "clear-control", controlKind, handle, pageControls } };
   }
   if (command === "insert-row") {
     allow(bag, ["url", "page", "title"]);
@@ -182,7 +201,7 @@ export function parseAction(command: string, args: string[], inherited?: { url: 
 }
 
 type Lookup = {
-  control: (handle: string) => Promise<string>;
+  control: (kind: HandleKind, handle: string) => Promise<string>;
   column: (column: string) => Promise<string>;
 };
 
@@ -203,9 +222,15 @@ async function execute(editor: Editor, step: Step, lookup: Lookup, mark: () => v
       console.log(`open-modal ${step.modal}`);
       return;
     }
+    if (step.kind === "style-modal") {
+      await styleModal(editor, step.page, step.header, step.sentence, step.button);
+      console.log(`style-modal ${step.page}`);
+      mark();
+      return;
+    }
     if (step.kind === "set-control") {
-      await writeControl(editor, step.handle, step.source, lookup);
-      console.log(`set-control ${step.handle}`);
+      await writeControl(editor, step.controlKind, step.handle, step.source, lookup);
+      console.log(`set-control ${step.controlKind}.${step.handle}`);
       mark();
       return;
     }
@@ -216,8 +241,9 @@ async function execute(editor: Editor, step: Step, lookup: Lookup, mark: () => v
         mark();
         return;
       }
-      await clearOneControl(editor, step.handle ?? "");
-      console.log(`clear-control ${step.handle}`);
+      if (!step.controlKind || !step.handle) fail("clear-control requires --handle");
+      await clearOneControl(editor, step.controlKind, step.handle);
+      console.log(`clear-control ${step.controlKind}.${step.handle}`);
       mark();
       return;
     }

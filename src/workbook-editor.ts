@@ -1,9 +1,10 @@
 import type { Locator, Page } from "playwright";
 import type { Editor } from "./editor.js";
-import { fail } from "./errors.js";
+import { Exit, fail } from "./errors.js";
 import { locateTitle } from "./edit.js";
-import { controlTitle } from "./handles.js";
-import { readModel } from "./place.js";
+import { controlTitle, type HandleKind } from "./handles.js";
+import { confirmSelected, placeArea, readModel } from "./place.js";
+import { columnTitle } from "./system-columns.js";
 
 async function pageTabs(page: Page): Promise<{ id: string; name: string; selected: boolean }[]> {
   return (await readModel(page)).pages;
@@ -77,7 +78,7 @@ export function workbookEditor(page: Page): Editor {
         return [...root.querySelectorAll("[data-selectable]")]
           .filter((node) => node.querySelector("input, textarea, [contenteditable='true']"))
           .map((node) => (node.querySelector('[data-testid="dynamic-title"]')?.textContent || "").trim())
-          .filter((title) => title.startsWith("v.") || title.startsWith("sys."));
+          .filter((title) => title.startsWith("c.") || title.startsWith("v."));
       });
       for (const title of titles) await writeControlValue(page, (await locateTitle(page, title)).id, "");
     },
@@ -112,11 +113,17 @@ export function workbookEditor(page: Page): Editor {
     async addPage(name) {
       await createPage(page, name);
     },
+    async addModal(name) {
+      await createModal(page, name);
+    },
     async addInputTable(title, column) {
       await createInputTable(page, title, column);
     },
     async addTextControl(title) {
       await createTextControl(page, title);
+    },
+    async addSegmentedControl(title, options) {
+      await createSegmentedControl(page, title, options);
     },
     async addButton(title) {
       await createButton(page, title);
@@ -124,8 +131,50 @@ export function workbookEditor(page: Page): Editor {
     async setInsertAction(button, table, column, controlTitle) {
       await saveButtonInsert(page, button, table, column, controlTitle);
     },
+    async setCloseModal(button) {
+      await saveButtonClose(page, button);
+    },
+    async setIfElse(button, table, column, controlTitle, modal, formula) {
+      await saveButtonIfElse(page, button, table, column, controlTitle, modal, formula);
+    },
+    async listColumns(title) {
+      const found = await locateTitle(page, title);
+      return headerLabels(page, found.id);
+    },
+    async addSystemColumn(title, column) {
+      await showSystemColumn(page, title, column);
+    },
+    async groupingKeys(title) {
+      await openColumnPanel(page, title);
+      return readGroupingLevels(page);
+    },
+    async groupWith(title, column, withColumn) {
+      await dragOntoGrouping(page, title, column, withColumn);
+    },
+    async addSelectColumn(title, column, options) {
+      await showSelectColumn(page, title, column, options);
+    },
+    async setOnSelectControl(table, clickColumn, control, sourceColumn) {
+      await saveColumnSelect(page, table, clickColumn, control, sourceColumn);
+    },
+    async setUpdateRow(button, table, column, valueControl, rowIdControl) {
+      await saveButtonUpdate(page, button, table, column, valueControl, rowIdControl);
+    },
     async publish() {
       await publishWorkbook(page);
+    },
+    async styleModalPage(header) {
+      await formatErrorModal(page, header);
+    },
+    async ensureModalSentence(sentence) {
+      return ensureSentence(page, sentence);
+    },
+    async ensureModalButton(label) {
+      return ensureButton(page, label);
+    },
+    async stackModalBody(sentenceId, sentenceArea, buttonId, buttonArea) {
+      await placeArea(page, sentenceId, sentenceArea, () => {}, "sentence");
+      await placeArea(page, buttonId, buttonArea, () => {}, "button");
     },
   };
 }
@@ -231,6 +280,54 @@ async function createPage(page: Page, name: string): Promise<void> {
   }
 }
 
+async function clickAddModal(page: Page): Promise<void> {
+  const button = page.getByRole("button", { name: "Add modal", exact: true });
+  if ((await button.count()) > 0) {
+    await button.first().click();
+    return;
+  }
+  const visible = page.getByRole("menuitem", { name: "Add modal", exact: true });
+  if ((await visible.count()) > 0) {
+    await visible.first().click();
+    return;
+  }
+  await page.locator('[data-testid="add-page-button"]').locator("xpath=..").getByRole("button").last().click();
+  await page.getByRole("menuitem", { name: "Add modal", exact: true }).click();
+}
+
+async function createModal(page: Page, name: string): Promise<void> {
+  const before = new Set((await pageTabs(page)).map((tab) => tab.id));
+  await clickAddModal(page);
+  await page.waitForTimeout(600);
+  const created = (await pageTabs(page)).filter((tab) => !before.has(tab.id));
+  if (created.length !== 1) fail(`Expected one new modal, found ${created.length}.`);
+  const id = created[0].id;
+  await page.locator(`[data-testid="page-dropdown-${id}"]`).click();
+  await page.locator('[data-testid="menuitem-rename"]').click();
+  const field = page.locator('input[aria-label^="Rename"]');
+  await field.fill(name);
+  await field.press("Enter");
+  try {
+    await page.waitForFunction(
+      (pageName) => {
+        const input = document.querySelector('input[aria-label^="Rename"]');
+        if (input instanceof HTMLElement && input.getClientRects().length > 0) return false;
+        const named = [...document.querySelectorAll('[data-testid^="page-item-"]')].some(
+          (el) => (el.textContent || "").trim() === pageName,
+        );
+        const heading = [...document.querySelectorAll("h1, h2, h3")].some(
+          (el) => (el.textContent || "").trim() === pageName,
+        );
+        return named && heading;
+      },
+      name,
+      { timeout: 5000 },
+    );
+  } catch {
+    fail(`Modal ${JSON.stringify(name)} was not created.`);
+  }
+}
+
 async function createInputTable(page: Page, title: string, column: string): Promise<void> {
   const before = new Set(await selectableIds(page));
   await clickExactButton(page, "Input");
@@ -284,16 +381,63 @@ async function renameInputColumn(page: Page, column: string): Promise<void> {
   }
 }
 
+async function setControlId(page: Page, elementId: string, title: string): Promise<void> {
+  await page.locator(`[data-selectable="${elementId}"], [data-testid="element-${elementId}"]`).first().click();
+  const settings = page.getByRole("tab", { name: "Settings", exact: true });
+  if ((await settings.count()) > 0) await settings.first().click();
+  const named = page.getByRole("textbox", { name: /control id/i });
+  const placeholder = page.locator('input[placeholder="control-id"], input[placeholder="Control ID"]');
+  const field = (await named.count()) > 0 ? named.first() : placeholder.first();
+  try {
+    await field.waitFor({ state: "visible", timeout: 5000 });
+  } catch {
+    fail(`Control ${elementId} has no control id field.`);
+  }
+  await field.fill(title);
+  await field.press("Enter");
+  try {
+    await page.waitForFunction(
+      (wanted) => {
+        const inputs = [...document.querySelectorAll("input")];
+        return inputs.some((node) => {
+          const label = `${node.getAttribute("aria-label") || ""} ${node.getAttribute("placeholder") || ""}`;
+          return /control id/i.test(label) && node.value === wanted;
+        });
+      },
+      title,
+      { timeout: 5000 },
+    );
+  } catch {
+    fail(`Control id is not ${JSON.stringify(title)}.`);
+  }
+}
+
+async function readCanvasTitle(page: Page, id: string): Promise<string> {
+  const node = page.locator(`[data-selectable="${id}"] [data-testid="dynamic-title"]`).first();
+  return ((await node.innerText().catch(() => "")) || "").trim();
+}
+
 async function createTextControl(page: Page, title: string): Promise<void> {
   const before = new Set(await selectableIds(page));
   await clickExactButton(page, "Controls");
   await page.waitForTimeout(300);
   await clickMatchingButton(page, /^text input$/i);
   const id = await createdId(page, before);
+  // The control-id field sentence-cases the canvas title when it is saved.
+  // Write the id first, then the title, so v.id_name_selected is what later commands find.
+  await setControlId(page, id, title);
   await renameTitle(page, id, title);
+  await page.waitForTimeout(600);
+  if ((await readCanvasTitle(page, id)) !== title) await renameTitle(page, id, title);
 }
 
 async function createButton(page: Page, title: string): Promise<void> {
+  try {
+    await locateTitle(page, title);
+    return;
+  } catch (error) {
+    if (!(error instanceof Exit) || !error.message.includes("was not found")) throw error;
+  }
   const before = new Set(await selectableIds(page));
   await clickExactButton(page, "UI");
   await page.waitForTimeout(300);
@@ -336,7 +480,7 @@ async function saveButtonInsert(
   } catch {
     fail(`Insert row did not target column ${JSON.stringify(column)}.`);
   }
-  const handle = controlTitle.replace(/^v\./, "");
+  const handle = controlTitle.replace(/^[cv]\./, "");
   if (!(await chipShows(dialog, controlTitle)) && !(await chipShows(dialog, handle))) {
     const row = columnRow(dialog, column);
     await chooseRowOption(page, row, ["Control"]);
@@ -354,6 +498,585 @@ async function saveButtonInsert(
   } catch {
     fail("Insert row dialog did not close.");
   }
+}
+
+function headingPattern(effect: string): RegExp {
+  if (effect === "Close modal/drawer") return /close modal/i;
+  if (effect === "If/else") return /if\s*\/\s*else/i;
+  return new RegExp(effect.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
+}
+
+async function openEffect(page: Page, button: string, effect: string): Promise<{ heading: Locator; dialog: Locator }> {
+  const found = await locateTitle(page, button);
+  await page.locator(`[data-selectable="${found.id}"], [data-testid="element-${found.id}"]`).first().click();
+  await page.getByRole("tab", { name: "Actions" }).click();
+  await page.getByRole("button", { name: "Add action", exact: true }).click();
+  await page.getByRole("button", { name: "Open options Action" }).click();
+  await page.getByRole("option", { name: effect, exact: true }).click();
+  const heading = page.getByRole("heading", { name: headingPattern(effect) });
+  await heading.waitFor({ state: "visible", timeout: 5000 });
+  const dialog = await insertRowDialog(page, heading);
+  return { heading, dialog };
+}
+
+async function closeActionDialog(page: Page, dialog: Locator, heading: Locator): Promise<void> {
+  const close = dialog.getByRole("button", { name: "Close", exact: true });
+  if ((await close.count()) > 0) await close.first().click();
+  else await page.getByRole("button", { name: "Close", exact: true }).last().click();
+  try {
+    await heading.waitFor({ state: "hidden", timeout: 5000 });
+  } catch {
+    fail("Action dialog did not close.");
+  }
+}
+
+async function saveButtonClose(page: Page, button: string): Promise<void> {
+  const { heading, dialog } = await openEffect(page, button, "Close modal/drawer");
+  const text = ((await dialog.innerText()) || "").toLowerCase();
+  if (!text.includes("close modal")) fail("Close modal was not saved.");
+  await closeActionDialog(page, dialog, heading);
+}
+
+async function fillCondition(page: Page, dialog: Locator, formula: string): Promise<void> {
+  const field = dialog.locator("textarea, [contenteditable='true']").last();
+  try {
+    await field.waitFor({ state: "visible", timeout: 5000 });
+  } catch {
+    fail("If/else has no condition field.");
+  }
+  await field.click();
+  await page.keyboard.press("Meta+A");
+  await page.keyboard.insertText(formula);
+  await page.keyboard.press("Enter");
+  try {
+    await page.waitForFunction(
+      (wanted) => {
+        const dialogs = [...document.querySelectorAll("[role='dialog']")];
+        return dialogs.some((node) => (node.textContent || "").includes(wanted));
+      },
+      formula,
+      { timeout: 5000 },
+    );
+  } catch {
+    fail(`If/else condition is not ${JSON.stringify(formula)}.`);
+  }
+}
+
+async function chooseBranchEffect(page: Page, dialog: Locator, branch: string, effect: string): Promise<void> {
+  const row = dialog.getByText(branch, { exact: true }).first().locator("xpath=ancestor::*[.//button][1]");
+  const opened = await chooseRowOption(page, row, [effect]);
+  if (!opened) {
+    const option = page.getByRole("option", { name: effect, exact: true });
+    if ((await option.count()) < 1) fail(`If/else ${branch} did not offer ${JSON.stringify(effect)}.`);
+    await option.first().click();
+  }
+}
+
+async function saveButtonIfElse(
+  page: Page,
+  button: string,
+  table: string,
+  column: string,
+  control: string,
+  modal: string,
+  formula: string,
+): Promise<void> {
+  const target = await locateTitle(page, table);
+  const { heading, dialog } = await openEffect(page, button, "If/else");
+  await fillCondition(page, dialog, formula);
+  await chooseBranchEffect(page, dialog, "Then", "Open modal/drawer");
+  const modalOption = page.getByRole("option", { name: modal, exact: true });
+  if ((await modalOption.count()) > 0) await modalOption.first().click();
+  else await chooseRowOption(page, dialog, [modal]);
+  if (!(await chipShows(dialog, modal)) && !((await dialog.innerText()) || "").includes(modal)) {
+    fail(`If/else did not open modal ${JSON.stringify(modal)}.`);
+  }
+  await chooseBranchEffect(page, dialog, "Else", "Insert row");
+  await selectIntoTable(page, dialog, table, target.id);
+  if (!(await chipShows(dialog, column))) fail(`If/else did not target column ${JSON.stringify(column)}.`);
+  const handle = control.replace(/^[cv]\./, "");
+  if (!(await chipShows(dialog, control)) && !(await chipShows(dialog, handle))) {
+    fail(`If/else did not take its value from ${JSON.stringify(control)}.`);
+  }
+  if (!((await dialog.innerText()) || "").includes(formula)) fail(`If/else condition is not ${JSON.stringify(formula)}.`);
+  await closeActionDialog(page, dialog, heading);
+}
+
+async function openColumnPanel(page: Page, title: string): Promise<void> {
+  const found = await locateTitle(page, title);
+  await page.locator(`[data-selectable="${found.id}"]`).first().click({ position: { x: 24, y: 24 } });
+  try {
+    await page.locator('[data-testid="groupings"]').waitFor({ state: "visible", timeout: 5000 });
+  } catch {
+    fail(`Groupings were not open for ${JSON.stringify(title)}.`);
+  }
+}
+
+async function readGroupingLevels(page: Page): Promise<string[][]> {
+  return page.evaluate(() => {
+    const label = (node: Element) => (node.textContent || "").replace(/Column menu/g, "").replace(/\s+/g, " ").trim();
+    const root = document.querySelector('[data-testid="groupings"]')?.parentElement;
+    const list = root?.querySelector("ul");
+    if (!list) return [];
+    return [...list.children]
+      .map((row) =>
+        [...row.querySelectorAll('[data-testid^="sheet-column-item-"]')].map(label).filter((value) => value.length > 0),
+      )
+      .filter((keys) => keys.length > 0);
+  });
+}
+
+async function columnChip(page: Page, name: string, where: "list" | "grouping"): Promise<string> {
+  const testId = await page.evaluate(
+    ({ name, where }) => {
+      const label = (node: Element) => (node.textContent || "").replace(/Column menu/g, "").replace(/\s+/g, " ").trim();
+      const root = document.querySelector('[data-testid="groupings"]')?.parentElement;
+      const match = [...document.querySelectorAll('[data-testid^="sheet-column-item-"]')].find((node) => {
+        const inGroup = root ? root.contains(node) : false;
+        return label(node) === name && (where === "grouping" ? inGroup : !inGroup);
+      });
+      return match?.getAttribute("data-testid") ?? null;
+    },
+    { name, where },
+  );
+  if (!testId) {
+    fail(
+      where === "list"
+        ? `Column ${JSON.stringify(name)} is not in the column list.`
+        : `Column ${JSON.stringify(name)} is not in the grouping.`,
+    );
+  }
+  return testId;
+}
+
+async function dragOntoGrouping(page: Page, title: string, column: string, withColumn: string): Promise<void> {
+  await openColumnPanel(page, title);
+  const sourceId = await columnChip(page, column, "list");
+  const targetId = await columnChip(page, withColumn, "grouping");
+  const source = page.locator(`[data-testid="${sourceId}"]`).first();
+  const target = page.locator(`[data-testid="${targetId}"]`).first();
+  await source.scrollIntoViewIfNeeded();
+  await target.scrollIntoViewIfNeeded();
+  const sourceBox = await source.boundingBox();
+  const targetBox = await target.boundingBox();
+  if (!sourceBox || !targetBox) fail(`Could not see ${JSON.stringify(column)} and ${JSON.stringify(withColumn)}.`);
+  const startX = sourceBox.x + sourceBox.width / 2;
+  const startY = sourceBox.y + sourceBox.height / 2;
+  const endX = targetBox.x + targetBox.width / 2;
+  const endY = targetBox.y + targetBox.height / 2;
+  await page.mouse.move(startX, startY);
+  await page.mouse.down();
+  await page.mouse.move(startX + 8, startY, { steps: 2 });
+  await page.mouse.move(endX, endY, { steps: 20 });
+  await page.mouse.up();
+  try {
+    await page.waitForFunction(
+      (name) => {
+        const label = (node: Element) => (node.textContent || "").replace(/Column menu/g, "").replace(/\s+/g, " ").trim();
+        const root = document.querySelector('[data-testid="groupings"]')?.parentElement;
+        const list = root?.querySelector("ul");
+        if (!list) return false;
+        return [...list.querySelectorAll('[data-testid^="sheet-column-item-"]')].some((node) => label(node) === name);
+      },
+      column,
+      { timeout: 5000 },
+    );
+  } catch {
+    fail(
+      `${JSON.stringify(column)} did not join the grouping that holds ${JSON.stringify(withColumn)}. Group column starts a second grouping and was not used.`,
+    );
+  }
+}
+
+async function headerLabels(page: Page, id: string): Promise<string[]> {
+  const host = page.locator(`[data-selectable="${id}"]`).first();
+  await host.click({ position: { x: 24, y: 24 } });
+  try {
+    await page.locator('[data-testid^="sheet-column-item-"]').first().waitFor({ state: "visible", timeout: 5000 });
+  } catch {
+    return [];
+  }
+  return page.evaluate(() =>
+    [...document.querySelectorAll('[data-testid^="sheet-column-item-"]')]
+      .map((node) => (node.textContent || "").replace(/Column menu/g, "").replace(/\s+/g, " ").trim())
+      .filter((value) => value.length > 0),
+  );
+}
+
+async function clickAddColumn(page: Page, id: string): Promise<void> {
+  const byTest = page.locator('[data-testid="add-column"]');
+  if ((await byTest.count()) > 0) {
+    await byTest.first().click();
+    return;
+  }
+  const named = page.getByRole("button", { name: /add (new )?column/i });
+  if ((await named.count()) > 0) {
+    await named.first().click();
+    return;
+  }
+  const opened = await page.evaluate((elementId) => {
+    const host =
+      document.querySelector(`[data-selectable="${elementId}"]`) ??
+      document.querySelector(`[data-testid="element_${elementId}"]`) ??
+      document.querySelector(`[data-testid="element-${elementId}"]`);
+    if (!(host instanceof HTMLElement)) return null;
+    const headers = [...host.querySelectorAll('[role="columnheader"]')];
+    const last = headers[headers.length - 1];
+    if (!(last instanceof HTMLElement)) return null;
+    const rect = last.getBoundingClientRect();
+    return { x: Math.round(rect.right + 18), y: Math.round(rect.top + rect.height / 2) };
+  }, id);
+  if (!opened) fail("Add column was not found.");
+  await page.mouse.click(opened.x, opened.y);
+}
+
+async function pickMenuLabel(page: Page, label: string): Promise<void> {
+  const item = page
+    .getByRole("menuitem", { name: label, exact: true })
+    .or(page.getByRole("option", { name: label, exact: true }));
+  const visible = async () => (await item.count()) > 0;
+  if (!(await visible())) {
+    const history = page
+      .getByRole("menuitem", { name: /row edit history/i })
+      .or(page.getByRole("option", { name: /row edit history/i }));
+    if ((await history.count()) > 0) {
+      await history.first().hover();
+      await page.waitForTimeout(200);
+    }
+  }
+  if (!(await visible())) {
+    const addNew = page
+      .getByRole("menuitem", { name: /add new column/i })
+      .or(page.getByRole("option", { name: /add new column/i }));
+    if ((await addNew.count()) > 0) {
+      await addNew.first().hover();
+      await page.waitForTimeout(200);
+    }
+  }
+  if (!(await visible())) {
+    const names = await page.evaluate(() =>
+      [...document.querySelectorAll('[role="menuitem"], [role="option"], [role="menuitemcheckbox"]')]
+        .map((node) => (node.textContent || "").replace(/\s+/g, " ").trim())
+        .filter((value) => value.length > 0)
+        .slice(0, 40),
+    );
+    fail(`Column menu did not include ${JSON.stringify(label)}. Menu: ${names.join(" | ") || "(none)"}`);
+  }
+  await item.first().click();
+}
+
+async function showSystemColumn(page: Page, title: string, column: string): Promise<void> {
+  const found = await locateTitle(page, title);
+  const visible = columnTitle(column);
+  if ((await headerLabels(page, found.id)).includes(visible)) return;
+  await clickAddColumn(page, found.id);
+  await page.waitForTimeout(300);
+  await pickMenuLabel(page, column);
+  try {
+    await page.waitForFunction(
+      (wanted) =>
+        [...document.querySelectorAll('[data-testid^="sheet-column-item-"]')].some((node) =>
+          (node.textContent || "").replace(/Column menu/g, "").trim() === wanted,
+        ),
+      visible,
+      { timeout: 8000 },
+    );
+  } catch {
+    fail(`Column ${JSON.stringify(column)} was not added to ${JSON.stringify(title)}.`);
+  }
+}
+
+async function showSelectColumn(page: Page, title: string, column: string, options: string[]): Promise<void> {
+  const found = await locateTitle(page, title);
+  const before = await headerLabels(page, found.id);
+  if (before.includes(column)) return;
+  await clickAddColumn(page, found.id);
+  await page.waitForTimeout(300);
+  await pickMenuLabel(page, "Single-select");
+  await page.waitForTimeout(200);
+  const valueType = page
+    .getByRole("menuitem", { name: "Text", exact: true })
+    .or(page.getByRole("option", { name: "Text", exact: true }));
+  if ((await valueType.count()) > 0) await valueType.first().click();
+  await page.waitForTimeout(400);
+  const dialog = page.getByRole("dialog").last();
+  if ((await dialog.count()) > 0 && (await dialog.isVisible())) {
+    await fillChoiceDialog(page, dialog, column, options);
+    return;
+  }
+  try {
+    await page.waitForFunction(
+      (previous) => {
+        const labels = [...document.querySelectorAll('[data-testid^="sheet-column-item-"]')].map((node) =>
+          (node.textContent || "").replace(/Column menu/g, "").replace(/\s+/g, " ").trim(),
+        );
+        return labels.some((label) => label.length > 0 && !previous.includes(label));
+      },
+      before,
+      { timeout: 8000 },
+    );
+  } catch {
+    fail(`Single-select column was not added to ${JSON.stringify(title)}.`);
+  }
+  const after = await headerLabels(page, found.id);
+  const created = after.find((label) => !before.includes(label));
+  if (!created) fail(`Single-select column was not added to ${JSON.stringify(title)}.`);
+  if (created !== column) await renameColumnItem(page, created, column);
+  await addColumnChoices(page, column, options);
+}
+
+async function renameColumnItem(page: Page, current: string, wanted: string): Promise<void> {
+  const item = page.locator('[data-testid^="sheet-column-item-"]').filter({ hasText: current }).first();
+  await item.click();
+  await item.locator('button[aria-label="Column menu"]').click({ force: true });
+  await page.getByText("Rename column", { exact: true }).click();
+  const field = page.getByRole("textbox", { name: current, exact: true });
+  await field.fill(wanted);
+  await field.press("Enter");
+  try {
+    await page.waitForFunction(
+      (name) =>
+        [...document.querySelectorAll('[data-testid^="sheet-column-item-"]')].some(
+          (node) => (node.textContent || "").replace(/Column menu/g, "").replace(/\s+/g, " ").trim() === name,
+        ),
+      wanted,
+      { timeout: 5000 },
+    );
+  } catch {
+    fail(`Column is not ${JSON.stringify(wanted)}.`);
+  }
+}
+
+async function addColumnChoices(page: Page, column: string, options: string[]): Promise<void> {
+  const item = page.locator('[data-testid^="sheet-column-item-"]').filter({ hasText: column }).first();
+  await item.click();
+  await item.locator('button[aria-label="Column menu"]').click({ force: true });
+  await page.getByText("Edit options…", { exact: true }).click();
+  const field = page.getByRole("textbox", { name: /add text value/i });
+  try {
+    await field.waitFor({ state: "visible", timeout: 5000 });
+  } catch {
+    fail(`Column ${JSON.stringify(column)} has no place to add choices.`);
+  }
+  for (const option of options) {
+    await field.fill(option);
+    await field.press("Enter");
+    try {
+      await page.waitForFunction((wanted) => (document.body.innerText || "").includes(wanted), option, { timeout: 5000 });
+    } catch {
+      fail(`Column ${JSON.stringify(column)} did not keep ${JSON.stringify(option)}.`);
+    }
+  }
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+}
+
+async function choiceShown(page: Page, option: string): Promise<boolean> {
+  const text = page.getByText(option, { exact: true });
+  return (await text.count()) > 0;
+}
+
+async function fillChoiceDialog(page: Page, dialog: Locator, column: string, options: string[]): Promise<void> {
+  const name = dialog.getByRole("textbox").first();
+  await name.fill(column);
+  for (const option of options) {
+    const field = dialog.getByRole("textbox").last();
+    await field.fill(option);
+    await field.press("Enter");
+  }
+  const done = dialog.getByRole("button", { name: /save|create|done|add/i });
+  if ((await done.count()) > 0) await done.first().click();
+  else await page.keyboard.press("Enter");
+}
+
+async function createSegmentedControl(page: Page, title: string, options: string[]): Promise<void> {
+  try {
+    await locateTitle(page, title);
+    return;
+  } catch (error) {
+    if (!(error instanceof Exit) || !error.message.includes("was not found")) throw error;
+  }
+  const before = new Set(await selectableIds(page));
+  await clickExactButton(page, "Controls");
+  await page.waitForTimeout(300);
+  await clickMatchingButton(page, /^segmented$/i);
+  const id = await createdId(page, before);
+  await setControlId(page, id, title);
+  await renameTitle(page, id, title);
+  await page.waitForTimeout(600);
+  if ((await readCanvasTitle(page, id)) !== title) await renameTitle(page, id, title);
+  await fillControlValues(page, options);
+}
+
+async function fillControlValues(page: Page, options: string[]): Promise<void> {
+  for (const option of options) {
+    if (await choiceShown(page, option)) continue;
+    const add = page.getByRole("button", { name: /add value|add option/i });
+    if ((await add.count()) > 0) await add.first().click();
+    const field = page.getByRole("textbox", { name: /value/i }).last();
+    try {
+      await field.waitFor({ state: "visible", timeout: 3000 });
+    } catch {
+      fail(`Segmented control has no place to add ${JSON.stringify(option)}.`);
+    }
+    await field.fill(option);
+    await field.press("Enter");
+    try {
+      await page.waitForFunction((wanted) => (document.body.innerText || "").includes(wanted), option, { timeout: 5000 });
+    } catch {
+      fail(`Segmented control did not keep ${JSON.stringify(option)}.`);
+    }
+  }
+}
+
+async function saveButtonUpdate(
+  page: Page,
+  button: string,
+  table: string,
+  column: string,
+  valueControl: string,
+  rowIdControl: string,
+): Promise<void> {
+  const found = await locateTitle(page, button);
+  await page.locator(`[data-selectable="${found.id}"], [data-testid="element-${found.id}"]`).first().click();
+  await page.getByRole("tab", { name: "Actions" }).click();
+  const already = ((await page.locator("body").innerText()) || "").replace(/\s+/g, " ");
+  if (
+    /update row/i.test(already) &&
+    already.includes(table) &&
+    already.includes(column) &&
+    already.includes(valueControl) &&
+    already.includes(rowIdControl)
+  ) {
+    return;
+  }
+  await page.getByRole("button", { name: "Add action", exact: true }).click();
+  await page.getByRole("button", { name: "Open options Action" }).click();
+  const effect = page.getByRole("option", { name: /^update row/i });
+  if ((await effect.count()) < 1) fail("Update row was not offered.");
+  await effect.first().click();
+  const heading = page.getByRole("heading", { name: /update row/i });
+  await heading.waitFor({ state: "visible", timeout: 5000 });
+  const dialog = await actionSurface(page, heading);
+  const target = await locateTitle(page, table);
+  await selectIntoTable(page, dialog, table, target.id);
+  if (!/single row/i.test((await dialog.innerText()) || "")) {
+    const picked = await chooseRowOption(page, dialog, ["Single row"]);
+    if (!picked) fail("Update row did not offer Single row.");
+  }
+  if (!((await dialog.innerText()) || "").includes(rowIdControl)) {
+    const picked = await chooseRowOption(page, dialog, ["Control", rowIdControl]);
+    if (!picked) await chooseRowOption(page, dialog, [rowIdControl]);
+  }
+  if (!((await dialog.innerText()) || "").includes(rowIdControl)) {
+    await dialog.getByText(/\(test\)/).first().click();
+    if (!(await clickControlChoice(page, rowIdControl))) {
+      fail(`Update row did not offer ${JSON.stringify(rowIdControl)}.`);
+    }
+  }
+  if ((await dialog.getByRole("button", { name: column, exact: true }).count()) < 1) {
+    const current = dialog.getByRole("button", { name: /^(name|ID)$/ });
+    if ((await current.count()) < 1) fail(`Update row did not target column ${JSON.stringify(column)}.`);
+    await current.first().click();
+    const choice = page.getByText(column, { exact: true }).last();
+    try {
+      await choice.click({ timeout: 5000 });
+    } catch {
+      fail(`Update row did not offer column ${JSON.stringify(column)}.`);
+    }
+  }
+  if (!showsControl((await dialog.innerText()) || "", valueControl)) {
+    const row = columnRow(dialog, column);
+    await chooseRowOption(page, row, ["Control"]);
+    await chooseRowOption(page, row, [valueControl]);
+  }
+  if (!showsControl((await dialog.innerText()) || "", valueControl)) {
+    await dialog.getByText(/\(test\)/).last().click();
+    if (!(await clickControlChoice(page, valueControl))) {
+      fail(`Update row did not offer ${JSON.stringify(valueControl)}.`);
+    }
+  }
+  const shown = (await dialog.innerText()) || "";
+  if (!showsControl(shown, rowIdControl)) fail(`Update row did not match ${JSON.stringify(rowIdControl)}.`);
+  if (!showsControl(shown, valueControl)) fail(`Update row did not write ${JSON.stringify(valueControl)}.`);
+  if (!/single row/i.test(shown)) fail("Update row did not use a single row.");
+  await closeActionDialog(page, dialog, heading);
+}
+
+async function actionSurface(page: Page, heading: Locator): Promise<Locator> {
+  const dialog = page.getByRole("dialog").filter({ has: heading });
+  if ((await dialog.count()) >= 1) return dialog.last();
+  const surface = page.locator("div").filter({ has: heading }).filter({
+    has: page.getByRole("button", { name: "Close", exact: true }),
+  });
+  if ((await surface.count()) >= 1) return surface.last();
+  fail("Action dialog was not found.");
+}
+
+async function saveColumnSelect(
+  page: Page,
+  table: string,
+  clickColumn: string,
+  control: string,
+  sourceColumn: string,
+): Promise<void> {
+  const found = await locateTitle(page, table);
+  await headerLabels(page, found.id);
+  const columnItem = page.locator('[data-testid^="sheet-column-item-"]').filter({ hasText: clickColumn }).first();
+  try {
+    await columnItem.click({ timeout: 5000 });
+  } catch {
+    fail(`Column ${JSON.stringify(clickColumn)} was not found on ${JSON.stringify(table)}.`);
+  }
+  await page.getByRole("tab", { name: "Actions" }).click();
+  const onSelect = page.getByRole("button", { name: "On select", exact: true });
+  if ((await onSelect.count()) < 1) {
+    const addSequence = page.getByRole("button", { name: "Add action sequence", exact: true });
+    if ((await addSequence.count()) < 1) fail("On select was not on the column.");
+    await addSequence.click();
+  }
+  await page.getByRole("button", { name: "Add action", exact: true }).click();
+  const actionOptions = page.getByRole("button", { name: "Open options Action" });
+  if ((await actionOptions.count()) > 0) await actionOptions.first().click();
+  const effect = page.getByRole("option", { name: "Set control value", exact: true });
+  if ((await effect.count()) > 0) await effect.first().click();
+  const heading = page.getByRole("heading", { name: /^set /i });
+  await heading.waitFor({ state: "visible", timeout: 5000 });
+  const dialog = await insertRowDialog(page, heading);
+  if (!((await dialog.innerText()) || "").includes(control)) {
+    const update = dialog.getByText("Update control", { exact: true }).locator("xpath=following::*[1]");
+    await update.click();
+    const option = page.getByText(control, { exact: true }).last();
+    try {
+      await option.click({ timeout: 5000 });
+    } catch {
+      fail(`Set control value did not offer ${JSON.stringify(control)}.`);
+    }
+  }
+  if (!/set value as[\s\S]*column/i.test((await dialog.innerText()) || "")) {
+    await dialog.getByRole("combobox", { name: /static values/i }).click();
+    await page.getByRole("option", { name: "Column", exact: true }).click();
+  }
+  const sourceButton = dialog.getByRole("button", { name: sourceColumn, exact: true });
+  if ((await sourceButton.count()) < 1) {
+    const current = dialog.getByRole("button", { name: clickColumn, exact: true });
+    if ((await current.count()) > 0) await current.first().click();
+    else await dialog.getByText("Column", { exact: true }).last().click();
+    const cell = page.getByRole("gridcell", { name: sourceColumn, exact: true });
+    try {
+      await cell.click({ timeout: 5000 });
+    } catch {
+      fail(`Set control value did not offer column ${JSON.stringify(sourceColumn)}.`);
+    }
+  }
+  const selection = dialog.getByText(/set control selection to/i);
+  if ((await selection.count()) > 0 && !/replace previous selection/i.test((await dialog.innerText()) || "")) {
+    await selection.first().locator("xpath=ancestor::*[.//button][1]").click();
+    await page.getByRole("option", { name: "Replace previous selection", exact: true }).click();
+  }
+  const shown = (await dialog.innerText()) || "";
+  if (!shown.includes(control)) fail(`Set control value did not target ${JSON.stringify(control)}.`);
+  if (!shown.includes(sourceColumn)) fail(`Set control value did not read ${JSON.stringify(sourceColumn)}.`);
+  await closeActionDialog(page, dialog, heading);
 }
 
 async function publishWorkbook(page: Page): Promise<void> {
@@ -449,12 +1172,12 @@ async function readColumnValue(page: Page, column: string): Promise<string> {
 
 /** Reads `--from-handle` and `--column` for set-control. Static values do not use this. */
 export function sourceLookup(page: Page): {
-  control: (handle: string) => Promise<string>;
+  control: (kind: HandleKind, handle: string) => Promise<string>;
   column: (column: string) => Promise<string>;
 } {
   return {
-    async control(handle) {
-      const title = controlTitle("variable", handle);
+    async control(kind, handle) {
+      const title = controlTitle(kind, handle);
       const found = await locateTitle(page, title);
       return readControlValue(page, found.id);
     },
@@ -808,6 +1531,33 @@ function columnRow(dialog: Locator, column: string): Locator {
   return dialog.getByText(column, { exact: true }).first().locator("xpath=ancestor::*[.//button][1]");
 }
 
+function showsControl(text: string, title: string): boolean {
+  if (text.includes(title)) return true;
+  const sentence = title
+    .replace(/^[cv]\./, "")
+    .split(/[_\s]+/)
+    .filter((word) => word.length > 0)
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(" ");
+  return sentence.length > 0 && text.includes(sentence);
+}
+
+async function clickControlChoice(page: Page, wanted: string): Promise<boolean> {
+  await page.waitForTimeout(300);
+  return page.evaluate((name) => {
+    const nodes = [...document.querySelectorAll("div")].filter((node) => {
+      const text = (node.textContent || "").replace(/\s+/g, " ").trim();
+      if (text !== name) return false;
+      const box = node.getBoundingClientRect();
+      return box.width >= 40 && box.width <= 280 && box.height >= 14 && box.height <= 40;
+    });
+    const hit = nodes[nodes.length - 1];
+    if (!(hit instanceof HTMLElement)) return false;
+    hit.click();
+    return true;
+  }, wanted);
+}
+
 async function chooseRowOption(page: Page, row: Locator, names: string[]): Promise<boolean> {
   const openers = row.getByRole("button", { name: /open options|static values|^control$|^formula$/i });
   const count = await openers.count();
@@ -832,4 +1582,376 @@ async function chooseRowOption(page: Page, row: Locator, names: string[]): Promi
     await page.keyboard.press("Escape");
   }
   return false;
+}
+
+const WARNING = "rgb(238, 138, 43)";
+
+async function existingId(page: Page, title: string): Promise<string | undefined> {
+  try {
+    return (await locateTitle(page, title)).id;
+  } catch (error) {
+    if (error instanceof Exit && error.message.includes("was not found")) return undefined;
+    throw error;
+  }
+}
+
+async function rightmost(locator: Locator, missing: string): Promise<Locator> {
+  const count = await locator.count();
+  if (count < 1) fail(missing);
+  if (count === 1) return locator.first();
+  const index = await locator.evaluateAll((nodes) => {
+    let best = 0;
+    let bestX = -1;
+    nodes.forEach((node, i) => {
+      const box = node.getBoundingClientRect();
+      if (box.width > 0 && box.x >= bestX) {
+        bestX = box.x;
+        best = i;
+      }
+    });
+    return best;
+  });
+  return locator.nth(index);
+}
+
+async function openPageFormat(page: Page): Promise<void> {
+  await page.keyboard.press("Escape");
+  const tab = page.getByRole("tab", { name: /^format$/i });
+  if ((await tab.count()) < 1) fail("Format tab was not found.");
+  await tab.first().click();
+}
+
+async function chooseCombobox(page: Page, name: RegExp, value: string, label: string): Promise<void> {
+  const box = await rightmost(page.getByRole("combobox", { name }), `Combobox ${name} was not found.`);
+  const tag = await box.evaluate((el) => el.tagName.toLowerCase());
+  const current =
+    tag === "select" ? await box.inputValue() : ((await box.innerText()) || "").replace(/\s+/g, " ").trim();
+  if (current === value || current === label) return;
+  if (tag === "select") {
+    await box.selectOption(value);
+    return;
+  }
+  await box.click();
+  const byValue = page.locator(`[role="option"][data-value="${value}"]`);
+  if ((await byValue.count()) > 0) {
+    await byValue.first().click();
+    return;
+  }
+  const option = page.getByRole("option", { name: label, exact: true });
+  if ((await option.count()) < 1) fail(`Option ${label} was not found.`);
+  await option.first().click();
+}
+
+async function openDisclosure(page: Page, name: string): Promise<void> {
+  const button = await rightmost(page.getByRole("button", { name, exact: true }), `${name} disclosure was not found.`);
+  if ((await button.getAttribute("aria-expanded")) === "true") return;
+  await button.click();
+}
+
+async function switchFor(page: Page, label: string): Promise<Locator> {
+  const nested = page.locator(`[aria-label="${label}"] [role="switch"]`);
+  if ((await nested.count()) > 0) return nested.first();
+  const self = page.locator(`[role="switch"][aria-label="${label}"]`);
+  if ((await self.count()) > 0) return self.first();
+  const named = page.getByRole("switch", { name: label, exact: true });
+  if ((await named.count()) > 0) return named.first();
+  fail(`${label} switch was not found.`);
+}
+
+async function setSwitch(page: Page, label: string, wantOn: boolean): Promise<void> {
+  const sw = await switchFor(page, label);
+  if (((await sw.getAttribute("aria-checked")) === "true") === wantOn) return;
+  await sw.click();
+  try {
+    await page.waitForFunction(
+      ({ name, want }) => {
+        const match = [...document.querySelectorAll('[role="switch"]')].find((el) => {
+          const row = el.closest("[aria-label]")?.getAttribute("aria-label") || el.getAttribute("aria-label") || "";
+          return row === name;
+        });
+        return match?.getAttribute("aria-checked") === (want ? "true" : "false");
+      },
+      { name: label, want: wantOn },
+      { timeout: 3000 },
+    );
+  } catch {
+    fail(`${label} did not turn ${wantOn ? "on" : "off"}.`);
+  }
+}
+
+async function ensureOn(page: Page, label: string): Promise<void> {
+  for (const role of ["switch", "checkbox", "button"] as const) {
+    const found = page.getByRole(role, { name: label, exact: true });
+    if ((await found.count()) < 1) continue;
+    const control = found.first();
+    const on =
+      (await control.getAttribute("aria-checked")) === "true" ||
+      (await control.getAttribute("aria-pressed")) === "true";
+    if (!on) await control.click();
+    return;
+  }
+  fail(`${label} control was not found.`);
+}
+
+async function commitHeaderTitle(page: Page, header: string): Promise<void> {
+  const result = await page.evaluate((title) => {
+    function shown(node: HTMLElement): string {
+      return (node.textContent || "").replace(/\s+/g, " ").trim();
+    }
+    function commit(editable: HTMLElement): string {
+      if (shown(editable) === title) return shown(editable);
+      editable.focus();
+      const range = document.createRange();
+      range.selectNodeContents(editable);
+      const selection = window.getSelection();
+      if (!selection) return "";
+      selection.removeAllRanges();
+      selection.addRange(range);
+      document.execCommand("insertText", false, title);
+      editable.blur();
+      return shown(editable);
+    }
+    const panel = [...document.querySelectorAll("button")].find((button) => {
+      return (button.textContent || "").trim() === "Header" && button.getBoundingClientRect().width > 0;
+    });
+    let node = panel?.parentElement ?? null;
+    for (let depth = 0; depth < 8 && node; depth++) {
+      const editable = node.querySelector(
+        "[data-testid='text-tile'] [contenteditable='true'], [data-testid='dynamic-title'] [contenteditable='true']",
+      );
+      if (editable instanceof HTMLElement && !editable.closest("[data-selectable]")) {
+        const text = commit(editable);
+        return { ok: text === title, text };
+      }
+      node = node.parentElement;
+    }
+    for (const heading of document.querySelectorAll("h1, h2, h3")) {
+      const editable = heading.querySelector(
+        "[data-testid='dynamic-title'] [contenteditable='true'], [data-testid='text-tile'] [contenteditable='true'], [contenteditable='true']",
+      );
+      if (editable instanceof HTMLElement) {
+        const text = commit(editable);
+        return { ok: text === title, text };
+      }
+    }
+    return { ok: false, text: "" };
+  }, header);
+  if (!result.ok) fail(`Header title is ${JSON.stringify(result.text)}, wanted ${JSON.stringify(header)}.`);
+}
+
+async function formatErrorModal(page: Page, header: string): Promise<void> {
+  await openPageFormat(page);
+  await chooseCombobox(page, /width/i, "xSmall", "Extra small");
+  await chooseCombobox(page, /spacing/i, "medium", "Medium");
+  await ensureOn(page, "Padding");
+  await ensureOn(page, "Element gap");
+  await openDisclosure(page, "Footer");
+  await setSwitch(page, "Show primary button", false);
+  await setSwitch(page, "Show secondary button", false);
+  await openDisclosure(page, "Header");
+  await commitHeaderTitle(page, header);
+  await setSwitch(page, "Show close icon", false);
+}
+
+async function clickAddElement(page: Page): Promise<void> {
+  const add = page.getByRole("button", { name: /^add element\b/i });
+  if ((await add.count()) >= 1) {
+    await add.first().click();
+    return;
+  }
+  await clickExactButton(page, "UI");
+}
+
+async function clickTextType(page: Page): Promise<void> {
+  const named = [
+    page.getByRole("menuitem", { name: /^text$/i }),
+    page.getByRole("option", { name: /^text$/i }),
+    page.getByRole("button", { name: /^text$/i }),
+  ];
+  for (const locator of named) {
+    if ((await locator.count()) >= 1) {
+      await locator.first().click();
+      return;
+    }
+  }
+  fail("Text element type was not found.");
+}
+
+async function addText(page: Page): Promise<string> {
+  const before = new Set(await selectableIds(page));
+  await clickAddElement(page);
+  await page.waitForTimeout(300);
+  await clickTextType(page);
+  return createdId(page, before);
+}
+
+async function readSentence(page: Page, id: string): Promise<string> {
+  return page.evaluate((elementId) => {
+    const host = document.querySelector(`[data-selectable="${elementId}"]`);
+    const editable = host?.querySelector("[contenteditable='true'], [contenteditable='']");
+    const source = editable ?? host;
+    return (source?.textContent || "").replace(/\s+/g, " ").trim();
+  }, id);
+}
+
+async function writeSentence(page: Page, id: string, sentence: string): Promise<void> {
+  if ((await readSentence(page, id)) === sentence) return;
+  const field = page
+    .locator(`[data-selectable="${id}"] [contenteditable="true"], [data-selectable="${id}"] [contenteditable=""]`)
+    .first();
+  try {
+    await field.click({ timeout: 5000 });
+  } catch {
+    fail(`Sentence field was not found on ${id}.`);
+  }
+  await page.keyboard.press("Meta+A");
+  await page.keyboard.insertText(sentence);
+  await page.keyboard.press("Escape");
+  const after = await readSentence(page, id);
+  if (after !== sentence) fail(`Sentence is ${JSON.stringify(after)}, wanted ${JSON.stringify(sentence)}.`);
+}
+
+async function selectFrame(page: Page, id: string, label: string): Promise<void> {
+  const host = page.locator(`[data-testid="element-${id}"]`);
+  try {
+    await host.waitFor({ state: "attached", timeout: 5000 });
+  } catch {
+    fail(`${label}: element-${id} is not on the page.`);
+  }
+  await host.click({ position: { x: 2, y: 2 } });
+  const editing = await page.evaluate(() => {
+    const active = document.activeElement;
+    return active instanceof HTMLElement && (active.isContentEditable || !!active.closest("[contenteditable='true']"));
+  });
+  if (editing) {
+    await page.keyboard.press("Escape");
+    const handle = page.locator(`[data-testid="selection_resizers_container_${id}"]`).getByRole("button", { name: /drag/i });
+    if ((await handle.count()) > 0) await handle.first().click();
+    else await host.click({ position: { x: 2, y: 2 } });
+  }
+  await confirmSelected(page, id, label);
+}
+
+async function alignLeft(page: Page, id: string): Promise<void> {
+  await selectFrame(page, id, "sentence");
+  const button = page.getByRole("button", { name: "Left align", exact: true });
+  if ((await button.count()) < 1) fail("Left align was not found.");
+  await button.first().click();
+  const align = await page.evaluate((elementId) => {
+    const host = document.querySelector(`[data-selectable="${elementId}"]`);
+    const block = host?.querySelector("p") ?? host?.querySelector("[contenteditable='true']");
+    if (!(block instanceof HTMLElement)) return "";
+    const inline = block.getAttribute("style") || "";
+    if (/text-align:\s*left/i.test(inline)) return "left";
+    return getComputedStyle(block).textAlign;
+  }, id);
+  if (align !== "left" && align !== "start") fail(`Sentence alignment is ${align || "unset"}.`);
+}
+
+async function ensureSentence(page: Page, sentence: string): Promise<string> {
+  const existing = await existingId(page, sentence);
+  const id = existing ?? (await addText(page));
+  await writeSentence(page, id, sentence);
+  await alignLeft(page, id);
+  return id;
+}
+
+async function clickHorizontalStretch(page: Page): Promise<void> {
+  const group = page.getByRole("radiogroup", { name: /^horizontal$/i });
+  if ((await group.count()) > 0) {
+    const radio = group.first().getByRole("radio", { name: /^stretch$/i });
+    if ((await radio.count()) > 0) {
+      await radio.first().click();
+      return;
+    }
+  }
+  const radios = page.getByRole("radio", { name: /^stretch$/i });
+  const count = await radios.count();
+  if (count < 1) fail("Horizontal Stretch was not found.");
+  if (count === 1) {
+    await radios.first().click();
+    return;
+  }
+  const index = await radios.evaluateAll((nodes) => {
+    const match = nodes.findIndex((node) => {
+      let parent: Element | null = node.parentElement;
+      for (let depth = 0; depth < 8 && parent; depth++) {
+        const label = parent.getAttribute("aria-label") || "";
+        const text = parent instanceof HTMLElement ? parent.innerText.slice(0, 40) : "";
+        if (label === "Horizontal" || /^horizontal\b/i.test(text)) return true;
+        parent = parent.parentElement;
+      }
+      return false;
+    });
+    return match < 0 ? 0 : match;
+  });
+  await radios.nth(index).click();
+}
+
+async function paintWarning(page: Page, id: string): Promise<void> {
+  const fill = page.getByRole("button", { name: /^fill color$/i });
+  if ((await fill.count()) < 1) fail("Fill color was not found.");
+  await fill.first().click();
+  const named = page.getByRole("button", { name: /^warning$/i });
+  const option = page.getByRole("option", { name: /^warning$/i });
+  if ((await named.count()) > 0) await named.first().click();
+  else if ((await option.count()) > 0) await option.first().click();
+  else {
+    const point = await page.evaluate((warning) => {
+      const dialog = [...document.querySelectorAll('[role="dialog"]')].at(-1) ?? document.body;
+      for (const node of dialog.querySelectorAll("*")) {
+        if (!(node instanceof HTMLElement)) continue;
+        const label = `${node.getAttribute("aria-label") || ""} ${node.getAttribute("title") || ""}`.trim();
+        if (/^warning$/i.test(label)) {
+          const rect = node.getBoundingClientRect();
+          return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
+        }
+      }
+      for (const node of dialog.querySelectorAll("*")) {
+        if (!(node instanceof HTMLElement)) continue;
+        const rect = node.getBoundingClientRect();
+        if (rect.width < 8 || rect.width > 40 || rect.height < 8 || rect.height > 40) continue;
+        if (getComputedStyle(node).backgroundColor === warning) {
+          return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
+        }
+      }
+      return null;
+    }, WARNING);
+    if (!point) fail("Warning swatch was not found.");
+    await page.mouse.click(point.x, point.y);
+  }
+  await page.keyboard.press("Escape");
+  await page.waitForTimeout(300);
+  const painted = await page.evaluate(
+    ({ elementId, warning }) => {
+      const host = document.querySelector(`[data-selectable="${elementId}"]`);
+      if (!(host instanceof HTMLElement)) return "";
+      for (const node of [host, ...host.querySelectorAll("*")]) {
+        if (!(node instanceof HTMLElement)) continue;
+        if (getComputedStyle(node).backgroundColor === warning) return warning;
+        const style = node.getAttribute("style") || "";
+        if (style.includes("--colors-warningFill") || /ee8a2b/i.test(style)) return "warningFill";
+      }
+      return "";
+    },
+    { elementId: id, warning: WARNING },
+  );
+  if (!painted) fail("Button fill is not Warning.");
+}
+
+/** addButton already wrote this label. A later onTitleChange rename is a different commit. */
+async function ensureButton(page: Page, label: string): Promise<string> {
+  let id = await existingId(page, label);
+  if (!id) {
+    await createButton(page, label);
+    id = await existingId(page, label);
+    if (!id) fail(`Button ${JSON.stringify(label)} was not created.`);
+  }
+  await page.locator(`[data-selectable="${id}"], [data-testid="element-${id}"]`).first().click();
+  const properties = page.getByRole("tab", { name: /^properties$/i });
+  if ((await properties.count()) > 0) await properties.first().click();
+  await clickHorizontalStretch(page);
+  await paintWarning(page, id);
+  await saveButtonClose(page, label);
+  return id;
 }

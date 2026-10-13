@@ -29,6 +29,10 @@ function pageEditor(
     insertRows: record("insertRows"),
     editCell: record("editCell"),
     deleteRow: record("deleteRow"),
+    styleModalPage: async () => {},
+    ensureModalSentence: async () => "",
+    ensureModalButton: async () => "",
+    stackModalBody: async () => {},
   };
   return { editor, calls };
 }

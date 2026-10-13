@@ -52,6 +52,14 @@ function recordingEditor(
     async deleteRow(title) {
       calls.push(`deleteRow:${title}`);
     },
+    async styleModalPage() {},
+    async ensureModalSentence() {
+      return "";
+    },
+    async ensureModalButton() {
+      return "";
+    },
+    async stackModalBody() {},
   };
 }
 

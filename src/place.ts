@@ -21,6 +21,7 @@ const CORRECT_PX = 36;
 const MAX_DRAG_PX = 96;
 const MAX_ATTEMPTS = 40;
 const SETTLE_MS = 600;
+const SETTLE_POLLS = 4;
 
 export type EdgeName = "rowStart" | "rowEnd" | "colStart" | "colEnd";
 
@@ -186,6 +187,232 @@ function areaDiffers(left: GridArea, right: GridArea): boolean {
 
 function sameArea(left: GridArea, right: GridArea): boolean {
   return !areaDiffers(left, right);
+}
+
+function cloneArea(area: GridArea): GridArea {
+  return {
+    rowStart: area.rowStart,
+    colStart: area.colStart,
+    rowEnd: area.rowEnd,
+    colEnd: area.colEnd,
+  };
+}
+
+function rangesOverlap(start: number, end: number, otherStart: number, otherEnd: number): boolean {
+  return start < otherEnd && otherStart < end;
+}
+
+function overlaps(left: GridArea, right: GridArea): boolean {
+  return (
+    rangesOverlap(left.rowStart, left.rowEnd, right.rowStart, right.rowEnd) &&
+    rangesOverlap(left.colStart, left.colEnd, right.colStart, right.colEnd)
+  );
+}
+
+/**
+ * A row edge that finishes on a neighbor's boundary still drags through it.
+ * The nudge that crosses the line lands inside the neighbor, and Sigma then
+ * stretches that neighbor or leaves the edge where it was.
+ */
+function rowEdgeHitsNeighbor(edge: EdgeName, before: GridArea, after: GridArea, neighbor: GridArea): boolean {
+  if (edge !== "rowStart" && edge !== "rowEnd") return false;
+  if (!rangesOverlap(after.colStart, after.colEnd, neighbor.colStart, neighbor.colEnd)) return false;
+  if (rangesOverlap(after.rowStart, after.rowEnd, neighbor.rowStart, neighbor.rowEnd)) return true;
+  if (edge === "rowStart" && after.rowStart < before.rowStart) {
+    return neighbor.rowEnd <= before.rowStart && neighbor.rowEnd >= after.rowStart;
+  }
+  if (edge === "rowEnd" && after.rowEnd > before.rowEnd) {
+    return neighbor.rowStart >= before.rowEnd && neighbor.rowStart <= after.rowEnd;
+  }
+  return false;
+}
+
+function stepHits(edge: EdgeName, before: GridArea, after: GridArea, neighbor: GridArea): boolean {
+  return overlaps(after, neighbor) || rowEdgeHitsNeighbor(edge, before, after, neighbor);
+}
+
+/** Null moves the element being placed. A number is an index into `others`. */
+export type PlacementStep = {
+  index: number | null;
+  area: GridArea;
+};
+
+function directSteps(current: GridArea, target: GridArea): PlacementStep[] {
+  const edges = orderEdgeUpdates(current, target);
+  const steps: PlacementStep[] = [];
+  let cursor = cloneArea(current);
+  for (const edge of edges) {
+    cursor = { ...cursor, [edge]: target[edge] };
+    steps.push({ index: null, area: cloneArea(cursor) });
+  }
+  return steps;
+}
+
+function edgeHits(current: GridArea, target: GridArea, neighbor: GridArea): { row: boolean; column: boolean } {
+  const hit = { row: false, column: false };
+  if (sameArea(current, target)) return hit;
+  const edges = orderEdgeUpdates(current, target);
+  let cursor = cloneArea(current);
+  for (const edge of edges) {
+    const next = { ...cursor, [edge]: target[edge] };
+    if (stepHits(edge, cursor, next, neighbor)) {
+      if (edge === "rowStart" || edge === "rowEnd") hit.row = true;
+      else hit.column = true;
+    }
+    cursor = next;
+  }
+  return hit;
+}
+
+function splitMid(mover: GridArea, neighbor: GridArea): number {
+  const sharedStart = Math.max(mover.colStart, neighbor.colStart);
+  const sharedEnd = Math.min(mover.colEnd, neighbor.colEnd);
+  const width = sharedEnd - sharedStart;
+  if (width < 2) throw new Error("Shared columns are too narrow to split");
+  return sharedStart + Math.floor(width / 2);
+}
+
+function planCollides(current: GridArea, others: readonly GridArea[], steps: PlacementStep[]): boolean {
+  let mover = cloneArea(current);
+  const live = others.map((area) => cloneArea(area));
+  for (const step of steps) {
+    if (step.index !== null && (step.index < 0 || step.index >= live.length)) {
+      throw new Error("Placement step names a missing neighbor");
+    }
+    const from = step.index === null ? mover : live[step.index];
+    if (!sameArea(from, step.area)) {
+      const edges = orderEdgeUpdates(from, step.area);
+      let cursor = cloneArea(from);
+      for (const edge of edges) {
+        const next = { ...cursor, [edge]: step.area[edge] };
+        const obstacles: GridArea[] = [];
+        if (step.index !== null) obstacles.push(mover);
+        for (let index = 0; index < live.length; index += 1) {
+          if (index !== step.index) obstacles.push(live[index]);
+        }
+        if (obstacles.some((obstacle) => stepHits(edge, cursor, next, obstacle))) return true;
+        cursor = next;
+      }
+    }
+    if (step.index === null) mover = cloneArea(step.area);
+    else live[step.index] = cloneArea(step.area);
+  }
+  return false;
+}
+
+function sidestepSteps(
+  current: GridArea,
+  target: GridArea,
+  others: readonly GridArea[],
+  blockers: number[],
+  restoreBeforeFinish: boolean,
+): PlacementStep[] {
+  let colEnd = current.colEnd;
+  const parkedAreas: GridArea[] = [];
+  for (const index of blockers) {
+    const neighbor = others[index];
+    const mid = splitMid(current, neighbor);
+    colEnd = Math.min(colEnd, mid);
+    const parked: GridArea = {
+      rowStart: neighbor.rowStart,
+      colStart: mid,
+      rowEnd: neighbor.rowEnd,
+      colEnd: neighbor.colEnd,
+    };
+    if (parked.colStart >= parked.colEnd || parked.rowStart >= parked.rowEnd) {
+      throw new Error("Shared columns are too narrow to split");
+    }
+    parkedAreas.push(parked);
+  }
+  if (current.colStart >= colEnd) throw new Error("Shared columns are too narrow to split");
+
+  const left: GridArea = {
+    rowStart: current.rowStart,
+    colStart: current.colStart,
+    rowEnd: current.rowEnd,
+    colEnd,
+  };
+  const raised: GridArea = {
+    rowStart: target.rowStart,
+    colStart: left.colStart,
+    rowEnd: target.rowEnd,
+    colEnd: left.colEnd,
+  };
+  if (raised.rowStart >= raised.rowEnd || raised.colStart >= raised.colEnd) {
+    throw new Error("Shared columns are too narrow to split");
+  }
+
+  const steps: PlacementStep[] = [];
+  let mover = cloneArea(current);
+  const live = others.map((area) => cloneArea(area));
+  const pushMover = (next: GridArea) => {
+    if (sameArea(mover, next)) return;
+    steps.push({ index: null, area: cloneArea(next) });
+    mover = cloneArea(next);
+  };
+  const pushNeighbor = (index: number, next: GridArea) => {
+    if (sameArea(live[index], next)) return;
+    steps.push({ index, area: cloneArea(next) });
+    live[index] = cloneArea(next);
+  };
+
+  pushMover(left);
+  for (let index = 0; index < blockers.length; index += 1) {
+    pushNeighbor(blockers[index], parkedAreas[index]);
+  }
+  pushMover(raised);
+  const restore = () => {
+    for (const index of blockers) pushNeighbor(index, others[index]);
+  };
+  if (restoreBeforeFinish) {
+    restore();
+    pushMover(target);
+  } else {
+    pushMover(target);
+    restore();
+  }
+  return steps;
+}
+
+/**
+ * Areas that take `current` to `target` without dragging a row edge through
+ * another element. A clear move keeps today's one-edge order. A row move that
+ * would overlap a neighbor, or land on that neighbor's boundary, parks the
+ * moving element on the left half of the shared columns and the neighbor on
+ * the right half, moves the rows, then restores both column spans.
+ */
+export function planPlacement(
+  current: GridArea,
+  target: GridArea,
+  others: readonly GridArea[],
+): PlacementStep[] {
+  if (others.some((other) => overlaps(target, other))) {
+    throw new Error("Target overlaps another element");
+  }
+  if (others.some((other) => overlaps(current, other))) {
+    throw new Error("Current area overlaps another element");
+  }
+  if (sameArea(current, target)) return [];
+
+  let row = false;
+  let column = false;
+  const blockers: number[] = [];
+  for (let index = 0; index < others.length; index += 1) {
+    const hit = edgeHits(current, target, others[index]);
+    if (hit.row) {
+      row = true;
+      blockers.push(index);
+    }
+    if (hit.column) column = true;
+  }
+  if (!row && !column) return directSteps(current, target);
+  if (!row && column) throw new Error("Column move passes through another element");
+
+  const restoringFirst = sidestepSteps(current, target, others, blockers, true);
+  if (!planCollides(current, others, restoringFirst)) return restoringFirst;
+  const finishingFirst = sidestepSteps(current, target, others, blockers, false);
+  if (!planCollides(current, others, finishingFirst)) return finishingFirst;
+  throw new Error("Placement still passes through a neighbor");
 }
 
 /** A row drag may not move columns. A column drag may not move rows. */
@@ -624,6 +851,47 @@ async function dragEdge(
   );
 }
 
+/** Wait until two later reads agree. One settle interval can be early; the poll is capped. */
+async function readSettledGridArea(page: Page, id: string): Promise<GridArea> {
+  await page.waitForTimeout(SETTLE_MS);
+  let previous = await readGridArea(page, id);
+  for (let poll = 0; poll < SETTLE_POLLS; poll += 1) {
+    await page.waitForTimeout(SETTLE_MS);
+    const next = await readGridArea(page, id);
+    if (sameArea(previous, next)) return next;
+    previous = next;
+  }
+  return previous;
+}
+
+async function dragUntilSettled(
+  page: Page,
+  id: string,
+  edge: EdgeName,
+  direction: 1 | -1,
+  pixels: number,
+  before: GridArea,
+  onChanged: () => void,
+  label: string,
+): Promise<GridArea> {
+  let gesture: GestureResult;
+  try {
+    gesture = await dragEdge(page, id, edge, direction, pixels, label);
+  } catch (error) {
+    if (error instanceof Exit) throw error;
+    const landed = await readSettledGridArea(page, id);
+    if (areaDiffers(before, landed)) onChanged();
+    const detail = error instanceof Error ? error.message : String(error);
+    fail(`${label}: ${edge} drag failed: ${detail} (area ${formatGridArea(landed)})`);
+  }
+  if (!gesture.ok) fail(`${label}: did not resize ${edge}: ${gesture.reason}`);
+  const landed = await readSettledGridArea(page, id);
+  if (areaDiffers(before, landed)) onChanged();
+  const drift = driftReason(edge, before, landed);
+  if (drift) fail(`${label}: ${edge} changed ${drift} (area ${formatGridArea(landed)})`);
+  return landed;
+}
+
 async function moveEdge(
   page: Page,
   id: string,
@@ -638,25 +906,12 @@ async function moveEdge(
   for (let attempt = 1; attempt <= MAX_ATTEMPTS && area[edge] !== goal; attempt += 1) {
     const before = area;
     const direction: 1 | -1 = before[edge] < goal ? 1 : -1;
-    let gesture: GestureResult;
-    try {
-      gesture = await dragEdge(page, id, edge, direction, NUDGE_PX, label);
-    } catch (error) {
-      if (error instanceof Exit) throw error;
-      await page.waitForTimeout(SETTLE_MS);
-      area = await readGridArea(page, id);
-      if (areaDiffers(before, area)) onChanged();
-      const detail = error instanceof Error ? error.message : String(error);
-      fail(`${label}: ${edge} drag failed: ${detail} (area ${formatGridArea(area)})`);
-    }
-    if (!gesture.ok) fail(`${label}: did not resize ${edge}: ${gesture.reason}`);
-    await page.waitForTimeout(SETTLE_MS);
-    area = await readGridArea(page, id);
-    if (areaDiffers(before, area)) onChanged();
-    const drift = driftReason(edge, before, area);
-    if (drift) fail(`${label}: ${edge} changed ${drift} (area ${formatGridArea(area)})`);
+    area = await dragUntilSettled(page, id, edge, direction, NUDGE_PX, before, onChanged, label);
     if (area[edge] === before[edge]) {
-      fail(`${label}: ${edge} did not move (area ${formatGridArea(area)})`);
+      area = await dragUntilSettled(page, id, edge, direction, MAX_DRAG_PX, before, onChanged, label);
+      if (area[edge] === before[edge]) {
+        fail(`${label}: ${edge} did not move (area ${formatGridArea(area)})`);
+      }
     }
     if (area[edge] === goal) return;
     if (overshot(before[edge], area[edge], goal)) {
@@ -666,8 +921,7 @@ async function moveEdge(
         correction = await dragEdge(page, id, edge, back, CORRECT_PX, label);
       } catch (error) {
         if (error instanceof Exit) throw error;
-        await page.waitForTimeout(SETTLE_MS);
-        const afterError = await readGridArea(page, id);
+        const afterError = await readSettledGridArea(page, id);
         if (areaDiffers(before, afterError)) onChanged();
         const detail = error instanceof Error ? error.message : String(error);
         fail(`${label}: ${edge} correction failed: ${detail} (area ${formatGridArea(afterError)})`);
@@ -677,8 +931,7 @@ async function moveEdge(
           `${label}: ${edge} overshot ${goal} and the correction did not run (${correction.reason}) (area ${formatGridArea(area)})`,
         );
       }
-      await page.waitForTimeout(SETTLE_MS);
-      const corrected = await readGridArea(page, id);
+      const corrected = await readSettledGridArea(page, id);
       if (areaDiffers(before, corrected)) onChanged();
       const correctionDrift = driftReason(edge, before, corrected);
       if (correctionDrift) {
@@ -696,7 +949,53 @@ async function moveEdge(
   fail(`${label}: ${edge} did not reach ${goal} after ${MAX_ATTEMPTS} attempts (area ${formatGridArea(area)})`);
 }
 
-/** Move one element to `target`, one edge at a time. `onChanged` runs on the first real grid change. */
+async function readSiblingAreas(page: Page, id: string): Promise<{ id: string; area: GridArea }[]> {
+  const ids = await page.evaluate((elementId) => {
+    const node = document.querySelector(`[data-testid="element_${elementId}"]`);
+    const container = node?.closest("[data-element-container]");
+    const host = container?.parentElement;
+    if (!host) return [] as string[];
+    const found: string[] = [];
+    for (const child of host.children) {
+      if (!(child instanceof HTMLElement) || !child.hasAttribute("data-element-container")) continue;
+      const selectable = child.getAttribute("data-selectable") || "";
+      if (!selectable || selectable === elementId) continue;
+      found.push(selectable);
+    }
+    return found;
+  }, id);
+  const siblings: { id: string; area: GridArea }[] = [];
+  for (const siblingId of ids) {
+    siblings.push({ id: siblingId, area: await readGridArea(page, siblingId) });
+  }
+  return siblings;
+}
+
+async function moveBetween(
+  page: Page,
+  id: string,
+  target: GridArea,
+  onChanged: () => void,
+  label: string,
+): Promise<void> {
+  const current = await readGridArea(page, id);
+  if (sameArea(current, target)) return;
+  let edges: EdgeName[];
+  try {
+    edges = orderEdgeUpdates(current, target);
+  } catch (error) {
+    fail(error instanceof Error ? error.message : String(error));
+  }
+  for (const edge of edges) {
+    await moveEdge(page, id, edge, target[edge], onChanged, label);
+  }
+  const landed = await readGridArea(page, id);
+  if (!sameArea(landed, target)) {
+    fail(`${label}: landed on ${formatGridArea(landed)}, wanted ${formatGridArea(target)}`);
+  }
+}
+
+/** Move one element to `target`. A row drag that would pass through a neighbor sidesteps onto column halves first. */
 export async function placeArea(
   page: Page,
   id: string,
@@ -711,14 +1010,26 @@ export async function placeArea(
   if (current.rowStart >= current.rowEnd || current.colStart >= current.colEnd) {
     fail(`${label}: grid-area is not a span (${formatGridArea(current)})`);
   }
-  let edges: EdgeName[];
+  const siblings = await readSiblingAreas(page, id);
+  let steps: PlacementStep[];
   try {
-    edges = orderEdgeUpdates(current, target);
+    steps = planPlacement(
+      current,
+      target,
+      siblings.map((sibling) => sibling.area),
+    );
   } catch (error) {
+    if (error instanceof Exit) throw error;
     fail(error instanceof Error ? error.message : String(error));
   }
-  for (const edge of edges) {
-    await moveEdge(page, id, edge, target[edge], onChanged, label);
+  for (const step of steps) {
+    if (step.index === null) {
+      await moveBetween(page, id, step.area, onChanged, label);
+      continue;
+    }
+    const sibling = siblings[step.index];
+    if (!sibling) fail(`${label}: placement step names a missing neighbor`);
+    await moveBetween(page, sibling.id, step.area, onChanged, sibling.id);
   }
   const landed = await readGridArea(page, id);
   if (!sameArea(landed, target)) {

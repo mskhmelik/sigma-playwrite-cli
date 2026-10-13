@@ -5,7 +5,11 @@ import {
   addEmptyInputTable,
   addNameControl,
   addNamedButton,
+  addNamedModal,
   addNamedPage,
+  duplicateFormula,
+  saveCloseModal,
+  saveIfElse,
   saveInsertAction,
 } from "../dist/effects/build.js";
 
@@ -41,9 +45,23 @@ function buildEditor(pages: string[]): { editor: Editor; calls: string[] } {
     addButton: async (title) => {
       calls.push(`addButton:${title}`);
     },
+    addModal: async (name) => {
+      calls.push(`addModal:${name}`);
+    },
     setInsertAction: async (button, table, column, controlTitle) => {
       calls.push(`setInsertAction:${button}:${table}:${column}:${controlTitle}`);
     },
+    setCloseModal: async (button) => {
+      calls.push(`setCloseModal:${button}`);
+    },
+    setIfElse: async (button, table, column, controlTitle, modal, formula) => {
+      calls.push(`setIfElse:${button}:${table}:${column}:${controlTitle}:${modal}:${formula}`);
+    },
+    publish: async () => {},
+    styleModalPage: async () => {},
+    ensureModalSentence: async () => "",
+    ensureModalButton: async () => "",
+    stackModalBody: async () => {},
   };
   return { editor, calls };
 }
@@ -66,10 +84,10 @@ test("addEmptyInputTable asks for an empty table and its text column", async () 
   assert.deepEqual(calls, ["addInputTable:names:name"]);
 });
 
-test("addNameControl titles the text input v.<handle>", async () => {
+test("addNameControl titles the text input c.<name>", async () => {
   const { editor, calls } = buildEditor([]);
-  await addNameControl(editor, "name");
-  assert.deepEqual(calls, ["addTextControl:v.name"]);
+  await addNameControl(editor, "c", "name");
+  assert.deepEqual(calls, ["addTextControl:c.name"]);
 });
 
 test("addNamedButton asks for the button title", async () => {
@@ -80,22 +98,69 @@ test("addNamedButton asks for the button title", async () => {
 
 test("saveInsertAction stores insert-row from the control onto an input table", async () => {
   const { editor, calls } = buildEditor([]);
-  await saveInsertAction(editor, "Add", "names", "name", "name");
+  await saveInsertAction(editor, "Add", "names", "name", "c", "name");
   assert.deepEqual(calls, [
     "findElement:Add",
     "findElement:names",
-    "setInsertAction:Add:names:name:v.name",
+    "setInsertAction:Add:names:name:c.name",
   ]);
 });
 
 test("saveInsertAction does not save when the button is missing", async () => {
   const { editor, calls } = buildEditor([]);
-  await assert.rejects(() => saveInsertAction(editor, "missing", "names", "name", "name"), /missing title/);
+  await assert.rejects(() => saveInsertAction(editor, "missing", "names", "name", "c", "name"), /missing title/);
   assert.deepEqual(calls, ["findElement:missing"]);
 });
 
 test("saveInsertAction refuses a table that is not an input table", async () => {
   const { editor, calls } = buildEditor([]);
-  await assert.rejects(() => saveInsertAction(editor, "Add", "FCT_SALES", "name", "name"), /not an input table/);
+  await assert.rejects(() => saveInsertAction(editor, "Add", "FCT_SALES", "name", "c", "name"), /not an input table/);
   assert.ok(!calls.some((call) => call.startsWith("setInsertAction")));
+});
+
+test("addNamedModal creates a modal that is not already there", async () => {
+  const { editor, calls } = buildEditor(["Data"]);
+  await addNamedModal(editor, "Error");
+  assert.deepEqual(calls, ["findPage:Error", "addModal:Error"]);
+});
+
+test("addNamedModal stops when the modal already exists", async () => {
+  const { editor, calls } = buildEditor(["Error"]);
+  await assert.rejects(() => addNamedModal(editor, "Error"), /duplicate page/);
+  assert.deepEqual(calls, ["findPage:Error"]);
+});
+
+test("saveCloseModal saves close on the button", async () => {
+  const { editor, calls } = buildEditor([]);
+  await saveCloseModal(editor, "Create a new name");
+  assert.deepEqual(calls, ["findElement:Create a new name", "setCloseModal:Create a new name"]);
+});
+
+test("saveCloseModal does not save when the button is missing", async () => {
+  const { editor, calls } = buildEditor([]);
+  await assert.rejects(() => saveCloseModal(editor, "missing"), /missing title/);
+  assert.deepEqual(calls, ["findElement:missing"]);
+});
+
+test("saveIfElse opens the modal when the value exists and otherwise inserts the row", async () => {
+  const { editor, calls } = buildEditor(["Error"]);
+  await saveIfElse(editor, "Add", "names", "name", "c", "name", "Error");
+  assert.deepEqual(calls, [
+    "findElement:Add",
+    "findElement:names",
+    "findPage:Error",
+    `setIfElse:Add:names:name:c.name:Error:${duplicateFormula("names", "name", "c.name")}`,
+  ]);
+});
+
+test("saveIfElse does not save when the modal is missing", async () => {
+  const { editor, calls } = buildEditor([]);
+  await assert.rejects(() => saveIfElse(editor, "Add", "names", "name", "c", "name", "Error"), /missing page/);
+  assert.ok(!calls.some((call) => call.startsWith("setIfElse")));
+});
+
+test("saveIfElse does not save when the table is not an input table", async () => {
+  const { editor, calls } = buildEditor(["Error"]);
+  await assert.rejects(() => saveIfElse(editor, "Add", "FCT_SALES", "name", "c", "name", "Error"), /not an input table/);
+  assert.ok(!calls.some((call) => call.startsWith("setIfElse")));
 });
