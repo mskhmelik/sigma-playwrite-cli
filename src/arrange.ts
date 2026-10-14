@@ -109,7 +109,7 @@ export async function runArrange(args: string[]): Promise<void> {
     fail(error instanceof Error ? error.message : String(error));
   }
 
-  await withChrome(async (page) => {
+  await withChrome(flags.url, async (page) => {
     await ensureEditor(page, flags.url, flags.page);
     const before = await readModel(page);
     const group = pickGroup(before.groups, order);

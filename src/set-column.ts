@@ -274,7 +274,7 @@ async function setColumnDate(page: Page, column: string): Promise<void> {
 
 export async function runSetColumn(args: string[]): Promise<void> {
   const parsed = parseSetColumn(args);
-  await withChrome(async (page) => {
+  await withChrome(parsed.url, async (page) => {
     try {
       await ensureEditor(page, parsed.url, parsed.page);
       const component = await locateTitle(page, parsed.title);

@@ -342,7 +342,7 @@ export async function applyCreate(editor: Editor, parsed: CreateCommand, mark: (
 
 export async function runCreate(command: string, args: string[]): Promise<void> {
   const parsed = parseCreate(command, args);
-  await withChrome(async (page) => {
+  await withChrome(parsed.url, async (page) => {
     await ensureEditor(page, parsed.url, parsed.page);
     const editor = workbookEditor(page);
     await applyCreate(editor, parsed, () => {
