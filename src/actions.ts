@@ -285,7 +285,7 @@ export async function performAction(editor: Editor, step: Step, lookup: Lookup, 
 
 export async function runAction(command: string, args: string[]): Promise<void> {
   const parsed = parseAction(command, args);
-  await withChrome(async (page) => {
+  await withChrome(parsed.url, async (page) => {
     await ensureEditor(page, parsed.url, parsed.page);
     const mark = mutates(parsed.step)
       ? () => {

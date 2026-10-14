@@ -386,7 +386,7 @@ async function uploadCsv(page: Page, parsed: AddCsvCommand): Promise<void> {
 
 export async function runAddCsv(args: string[]): Promise<void> {
   const parsed = parseAddCsv(args);
-  await withChrome(async (page) => {
+  await withChrome(parsed.url, async (page) => {
     await ensureEditor(page, parsed.url, parsed.page);
     try {
       await uploadCsv(page, parsed);

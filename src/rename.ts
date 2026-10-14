@@ -93,7 +93,7 @@ async function writeTitle(page: Page, id: string, title: string): Promise<void> 
 export async function runRename(args: string[]): Promise<void> {
   const parsed = parseRename(args);
   if (parsed.unchanged) return;
-  await withChrome(async (page) => {
+  await withChrome(parsed.url, async (page) => {
     await ensureEditor(page, parsed.url, parsed.page);
     const component = await locateTitle(page, parsed.title);
     await writeTitle(page, component.id, parsed.name);

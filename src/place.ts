@@ -1,5 +1,5 @@
 import type { Page } from "playwright";
-import { pathSegmentFromUrl, toEditUrl, withChrome } from "./chrome.js";
+import { pathSegmentFromUrl, sameEditor, toEditUrl, withChrome } from "./chrome.js";
 import { Exit, fail } from "./errors.js";
 import { markOwned } from "./ledger.js";
 import { findWorkbook } from "./sigma-api.js";
@@ -575,7 +575,9 @@ async function choosePage(page: Page, requested: string | undefined): Promise<vo
 }
 
 export async function ensureEditor(page: Page, url: string, requestedPage: string | undefined): Promise<void> {
-  await page.goto(toEditUrl(url), { waitUntil: "domcontentloaded" });
+  if (!sameEditor(page.url(), url)) {
+    await page.goto(toEditUrl(url), { waitUntil: "domcontentloaded" });
+  }
   try {
     await page.locator('[data-testid="workbook-canvas"]').waitFor({ state: "visible", timeout: 30000 });
   } catch {
@@ -1090,7 +1092,7 @@ export async function runPlace(args: string[]): Promise<void> {
     fail(error instanceof Error ? error.message : String(error));
   }
 
-  await withChrome(async (page) => {
+  await withChrome(flags.url, async (page) => {
     await ensureEditor(page, flags.url, flags.page);
     const components = (await readModel(page)).groups.flatMap((group) => group.components);
     const located: { title: string; id: string; area: GridArea }[] = [];

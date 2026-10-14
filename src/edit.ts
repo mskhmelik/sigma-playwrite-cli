@@ -175,7 +175,7 @@ export async function runSelect(args: string[]): Promise<void> {
   if (!flags.title) fail("select requires --title");
   const title = flags.title;
 
-  await withChrome(async (page) => {
+  await withChrome(url, async (page) => {
     await ensureEditor(page, url, flags.page);
     const component = await locateTitle(page, title);
     await selectElement(page, component.id, title);
@@ -200,7 +200,7 @@ export async function runSize(args: string[]): Promise<void> {
     fail(error instanceof Error ? error.message : String(error));
   }
 
-  await withChrome(async (page) => {
+  await withChrome(url, async (page) => {
     const identity = await identityFor(page, url, flags.page);
     const component = await locateTitle(page, title);
     const area = elementSize ? applySize(await readGridArea(page, component.id), elementSize) : fixed!;
@@ -460,7 +460,7 @@ export async function runSet(args: string[]): Promise<void> {
     fail(error instanceof Error ? error.message : String(error));
   }
 
-  await withChrome(async (page) => {
+  await withChrome(url, async (page) => {
     const identity = await identityFor(page, url, flags.page);
     const component = await locateTitle(page, title);
     const type = await detectType(page, component.id);
@@ -523,7 +523,7 @@ export async function runAdd(args: string[]): Promise<void> {
   if (!flags.type) fail("add requires --type");
   if (flags.type !== "text") fail(`Unknown element type ${flags.type}. Known types: text`);
 
-  await withChrome(async (page) => {
+  await withChrome(url, async (page) => {
     const identity = await identityFor(page, url, flags.page);
     const before = new Set(await selectableIds(page));
     await clickAddElement(page);
