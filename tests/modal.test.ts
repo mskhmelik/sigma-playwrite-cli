@@ -42,6 +42,7 @@ function pageEditor(
     },
     stackModalBody: async () => {},
     addContainer: async () => {},
+    hasContainer: async () => false,
   };
   return { editor, calls };
 }

@@ -33,12 +33,7 @@ export async function addNamedButton(editor: Editor, title: string): Promise<voi
 
 export async function addNamedContainer(editor: Editor, handle: string, titles: string[]): Promise<void> {
   const title = containerTitle(handle);
-  try {
-    await editor.findElement(title);
-    return;
-  } catch {
-    // The container is not on the page yet.
-  }
+  if (await editor.hasContainer(title)) return;
   for (const element of titles) {
     try {
       await editor.findElement(element);

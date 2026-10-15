@@ -177,6 +177,9 @@ export function workbookEditor(page: Page): Editor {
       await placeArea(page, sentenceId, sentenceArea, () => {}, "sentence");
       await placeArea(page, buttonId, buttonArea, () => {}, "button");
     },
+    async hasContainer(title) {
+      return containerHeaderIs(page, title);
+    },
     async addContainer(titles, title, border, radius) {
       await createContainer(page, titles, title, border, radius);
     },
@@ -433,6 +436,31 @@ async function createTextControl(page: Page, title: string): Promise<void> {
   await renameTitle(page, id, title);
   await page.waitForTimeout(600);
   if ((await readCanvasTitle(page, id)) !== title) await renameTitle(page, id, title);
+}
+
+async function containerHeaderIs(page: Page, title: string): Promise<boolean> {
+  const ids = await page.evaluate(() => {
+    const selected =
+      document.querySelector('[data-testid^="page-item-"][data-selected="true"]') ??
+      document.querySelector('[data-testid^="page-item-"][aria-selected="true"]');
+    const pageId = (selected?.getAttribute("data-testid") || "").replace(/^page-item-/, "");
+    const root = pageId ? document.querySelector(`[data-layout-id="layout-body-${pageId}"]`) : document.body;
+    if (!root) return [] as string[];
+    return [...root.querySelectorAll("[data-element-container][data-selectable]")]
+      .filter((el) => [...el.querySelectorAll("[data-element-container][data-selectable]")].some((node) => node !== el))
+      .map((el) => el.getAttribute("data-selectable") || "")
+      .filter((id, index, all) => id.length > 0 && all.indexOf(id) === index);
+  });
+  for (const id of ids) {
+    const host = page.locator(elementHosts(id).join(", ")).first();
+    await host.scrollIntoViewIfNeeded().catch(() => undefined);
+    await host.click({ force: true });
+    const header = page.locator(`[data-testid="${inspectorHeader}"]`);
+    const raw = (await header.innerText().catch(() => "")) || "";
+    const line = raw.split("\n").map((part) => part.trim()).find((part) => part.length > 0) ?? "";
+    if (line === title) return true;
+  }
+  return false;
 }
 
 async function createContainer(page: Page, titles: string[], title: string, border: string, radius: string): Promise<void> {

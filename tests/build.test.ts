@@ -63,6 +63,7 @@ function buildEditor(pages: string[]): { editor: Editor; calls: string[] } {
     ensureModalButton: async () => "",
     stackModalBody: async () => {},
     addContainer: async () => {},
+    hasContainer: async () => false,
   };
   return { editor, calls };
 }

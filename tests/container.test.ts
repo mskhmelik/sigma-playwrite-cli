@@ -18,6 +18,10 @@ test("later elements are added to the selection with Meta and a forced click", (
 function containerEditor(present: string[]): { editor: Editor; calls: string[] } {
   const calls: string[] = [];
   const editor = {
+    async hasContainer(title: string) {
+      calls.push(`hasContainer:${title}`);
+      return present.includes(title);
+    },
     async findElement(title: string) {
       calls.push(`findElement:${title}`);
       if (!present.includes(title)) throw new Error("not on the page");
@@ -34,7 +38,7 @@ test("add container wraps the named elements and titles it cnt.<handle>", async 
   const { editor, calls } = containerEditor(["Employee", "Role"]);
   await addNamedContainer(editor, "variables_employee", ["Employee", "Role"]);
   assert.deepEqual(calls, [
-    "findElement:cnt.variables_employee",
+    "hasContainer:cnt.variables_employee",
     "findElement:Employee",
     "findElement:Role",
     "addContainer:Employee,Role:cnt.variables_employee:1px solid var(--color-border):8px",
@@ -48,11 +52,11 @@ test("a missing element does not create the container", async () => {
     /missing title/,
   );
   assert.equal(calls.some((call) => call.startsWith("addContainer")), false);
-  assert.equal(calls[0], "findElement:cnt.variables_employee");
+  assert.equal(calls[0], "hasContainer:cnt.variables_employee");
 });
 
 test("an existing cnt.<handle> is left as it is", async () => {
   const { editor, calls } = containerEditor(["cnt.variables_employee", "Employee"]);
   await addNamedContainer(editor, "variables_employee", ["Employee"]);
-  assert.deepEqual(calls, ["findElement:cnt.variables_employee"]);
+  assert.deepEqual(calls, ["hasContainer:cnt.variables_employee"]);
 });

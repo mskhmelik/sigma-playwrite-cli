@@ -64,6 +64,8 @@ export type Editor = {
     buttonId: string,
     buttonArea: { rowStart: number; colStart: number; rowEnd: number; colEnd: number },
   ): Promise<void>;
+  /** True when a container's inspector header is this title. Canvas titles do not count. */
+  hasContainer(title: string): Promise<boolean>;
   /** Wrap the named elements. Title is cnt.<handle>. Border and radius are the painted style. */
   addContainer(titles: string[], title: string, border: string, radius: string): Promise<void>;
 };

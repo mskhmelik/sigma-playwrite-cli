@@ -48,6 +48,7 @@ function modalEditor(findPage: (name: string) => Promise<void>): { editor: Edito
       );
     },
     addContainer: async () => {},
+    hasContainer: async () => false,
   };
   return { editor, calls };
 }
