@@ -2,7 +2,7 @@ import type { Page } from "playwright";
 import { pathSegmentFromUrl, sameEditor, toEditUrl, withChrome } from "./chrome.js";
 import { Exit, fail } from "./errors.js";
 import { markOwned } from "./ledger.js";
-import { findWorkbook } from "./sigma-api.js";
+import { workbookIdentity } from "./sigma-api.js";
 
 /**
  * Sigma editor (edit mode):
@@ -16,10 +16,7 @@ import { findWorkbook } from "./sigma-api.js";
  * The drag handle does not change grid-area. Each edge is a short resizer drag.
  */
 
-const NUDGE_PX = 72;
-const CORRECT_PX = 36;
 const MAX_DRAG_PX = 96;
-const MAX_ATTEMPTS = 40;
 const SETTLE_MS = 600;
 const SETTLE_POLLS = 4;
 
@@ -93,6 +90,53 @@ export function parseGridArea(value: string): GridArea {
 
 /** A Sigma page is 24 columns wide. A full-width element has width 24. */
 export const FULL_WIDTH = 24;
+
+/** Pixel size of one grid row or one grid column, from the element box. */
+export function unitPixels(
+  box: { width: number; height: number },
+  area: GridArea,
+  edge: EdgeName,
+): number {
+  const rowEdge = edge === "rowStart" || edge === "rowEnd";
+  const span = rowEdge ? area.rowEnd - area.rowStart : area.colEnd - area.colStart;
+  const pixels = rowEdge ? box.height : box.width;
+  if (span < 1 || pixels <= 0) throw new Error(`No ${rowEdge ? "row" : "column"} size to measure`);
+  return pixels / span;
+}
+
+/** A point on the element inside the window. The title is used when it is already visible. */
+export function visibleClick(
+  rect: { x: number; y: number; width: number; height: number },
+  preferred: { x: number; y: number },
+  viewport: { width: number; height: number },
+): { x: number; y: number } | null {
+  const left = Math.max(rect.x, 0);
+  const top = Math.max(rect.y, 0);
+  const right = Math.min(rect.x + rect.width, viewport.width);
+  const bottom = Math.min(rect.y + rect.height, viewport.height);
+  if (left >= right || top >= bottom) return null;
+  const inside =
+    preferred.x >= left && preferred.x < right && preferred.y >= top && preferred.y < bottom;
+  if (inside) return { x: preferred.x, y: preferred.y };
+  return { x: (left + right) / 2, y: (top + bottom) / 2 };
+}
+
+/** A dynamic title wins. A text tile with none is named from its first line. */
+export function componentLabel(titles: readonly string[], textTileText: string | undefined): string {
+  const named = titles.map((title) => title.trim()).filter((title) => title.length > 0);
+  if (named.length > 0) return named.join(" ");
+  const line = (textTileText ?? "")
+    .split("\n")
+    .map((part) => part.trim())
+    .find((part) => part.length > 0);
+  return line ?? "";
+}
+
+/** One grid unit toward the goal. A later miss asks for one unit back. */
+export function nextDragPixels(remainingUnits: number, unitPx: number): number {
+  if (remainingUnits === 0) return 0;
+  return (remainingUnits > 0 ? 1 : -1) * unitPx;
+}
 
 export type ElementSize = { width: number; height: number };
 
@@ -260,6 +304,12 @@ function stepHits(edge: EdgeName, before: GridArea, after: GridArea, neighbor: G
 export type PlacementStep = {
   index: number | null;
   area: GridArea;
+};
+
+export type PageItem = {
+  index: number;
+  current: GridArea;
+  target: GridArea;
 };
 
 function directSteps(current: GridArea, target: GridArea): PlacementStep[] {
@@ -440,6 +490,131 @@ export function planPlacement(
   throw new Error("Placement still passes through a neighbor");
 }
 
+function columnSpan(area: GridArea): number {
+  return area.colEnd - area.colStart;
+}
+
+function rowSpanOf(area: GridArea): number {
+  return area.rowEnd - area.rowStart;
+}
+
+/** True when a target still sits on another element, so the lane plan is required. */
+export function targetsOccupied(items: readonly PageItem[], obstacles: readonly GridArea[]): boolean {
+  for (const item of items) {
+    const others = [
+      ...obstacles,
+      ...items.filter((other) => other.index !== item.index).map((other) => other.current),
+    ];
+    if (others.some((other) => overlaps(item.target, other))) return true;
+  }
+  return false;
+}
+
+/**
+ * Move a whole layout when targets are still occupied.
+ * Clear one column lane, park every item below the page, then write the final cells.
+ */
+export function planPage(items: readonly PageItem[], obstacles: readonly GridArea[]): PlacementStep[] {
+  if (items.length === 0) return [];
+  const laneWidth = Math.min(...items.map((item) => Math.min(columnSpan(item.current), columnSpan(item.target))));
+  if (laneWidth < 1) throw new Error("Lane is empty");
+
+  let laneStart = -1;
+  let laneEnd = -1;
+  for (let end = FULL_WIDTH + 1; end - laneWidth >= 1; end -= 1) {
+    const start = end - laneWidth;
+    const blocked = obstacles.some((area) => rangesOverlap(area.colStart, area.colEnd, start, end));
+    if (!blocked) {
+      laneStart = start;
+      laneEnd = end;
+      break;
+    }
+  }
+  if (laneStart < 0) throw new Error("No free column lane");
+
+  const live = new Map<number, GridArea>();
+  for (const item of items) live.set(item.index, cloneArea(item.current));
+  const steps: PlacementStep[] = [];
+
+  const othersOf = (index: number): GridArea[] => {
+    const areas = [...obstacles];
+    for (const [key, area] of live) {
+      if (key !== index) areas.push(area);
+    }
+    return areas;
+  };
+
+  const emit = (index: number, next: GridArea) => {
+    const current = live.get(index);
+    if (!current) throw new Error("Placement step names a missing neighbor");
+    if (sameArea(current, next)) return;
+    const plan = planPlacement(current, next, othersOf(index));
+    if (plan.some((step) => step.index !== null)) throw new Error("Page move is not direct");
+    for (const step of plan) steps.push({ index, area: cloneArea(step.area) });
+    const landed = plan[plan.length - 1];
+    if (!landed) return;
+    live.set(index, cloneArea(landed.area));
+  };
+
+  const bottomFirst = [...items].sort((left, right) => right.current.rowStart - left.current.rowStart);
+
+  for (const item of bottomFirst) {
+    const area = live.get(item.index);
+    if (!area || !rangesOverlap(area.colStart, area.colEnd, laneStart, laneEnd)) continue;
+    if (area.colStart < laneStart) {
+      emit(item.index, { ...area, colEnd: laneStart });
+      continue;
+    }
+    const span = columnSpan(area);
+    const nextEnd = laneStart;
+    const nextStart = nextEnd - span;
+    if (nextStart < 1) throw new Error("No room to clear the column lane");
+    emit(item.index, { ...area, colStart: nextStart, colEnd: nextEnd });
+  }
+
+  let floor = 1;
+  for (const area of [...live.values(), ...items.map((item) => item.target), ...obstacles]) {
+    floor = Math.max(floor, area.rowEnd);
+  }
+  let cursor = floor;
+  const slots = new Map<number, GridArea>();
+  for (const item of bottomFirst) {
+    const area = live.get(item.index);
+    if (!area) throw new Error("Placement step names a missing neighbor");
+    const span = rowSpanOf(area);
+    slots.set(item.index, { rowStart: cursor, rowEnd: cursor + span, colStart: laneStart, colEnd: laneEnd });
+    cursor += span;
+  }
+
+  for (const item of bottomFirst) {
+    const area = live.get(item.index);
+    const slot = slots.get(item.index);
+    if (!area || !slot) throw new Error("Placement step names a missing neighbor");
+    emit(item.index, { rowStart: slot.rowStart, rowEnd: slot.rowEnd, colStart: area.colStart, colEnd: area.colEnd });
+    emit(item.index, slot);
+  }
+
+  const writers = [...items].sort((left, right) => {
+    const leftLane = left.target.colStart === laneStart && left.target.colEnd === laneEnd ? 1 : 0;
+    const rightLane = right.target.colStart === laneStart && right.target.colEnd === laneEnd ? 1 : 0;
+    if (leftLane !== rightLane) return leftLane - rightLane;
+    return (slots.get(left.index)?.rowStart ?? 0) - (slots.get(right.index)?.rowStart ?? 0);
+  });
+  for (const item of writers) {
+    const parked = live.get(item.index);
+    if (!parked) throw new Error("Placement step names a missing neighbor");
+    emit(item.index, {
+      rowStart: parked.rowStart,
+      rowEnd: parked.rowEnd,
+      colStart: item.target.colStart,
+      colEnd: item.target.colEnd,
+    });
+    emit(item.index, item.target);
+  }
+
+  return steps;
+}
+
 /** A row drag may not move columns. A column drag may not move rows. */
 function driftReason(edge: EdgeName, before: GridArea, after: GridArea): string | null {
   const rowMove = edge === "rowStart" || edge === "rowEnd";
@@ -467,18 +642,34 @@ function driftReason(edge: EdgeName, before: GridArea, after: GridArea): string 
   return null;
 }
 
-function overshot(before: number, after: number, goal: number): boolean {
-  return (before < goal && after > goal) || (before > goal && after < goal);
-}
-
 function axisDelta(edge: EdgeName, direction: 1 | -1, pixels: number): { x: number; y: number } {
   const distance = Math.min(Math.abs(pixels), MAX_DRAG_PX) * direction;
   if (edge === "rowStart" || edge === "rowEnd") return { x: 0, y: distance };
   return { x: distance, y: 0 };
 }
 
+async function revealGrid(page: Page): Promise<void> {
+  const ids = await page.evaluate(() => {
+    const tabs = [...document.querySelectorAll('[data-testid^="page-item-"]')];
+    const selected =
+      tabs.find((el) => el.getAttribute("data-selected") === "true" || el.getAttribute("aria-selected") === "true") ??
+      tabs[0];
+    if (!selected) return [] as string[];
+    const pageId = (selected.getAttribute("data-testid") || "").replace(/^page-item-/, "");
+    const root = document.querySelector(`[data-layout-id="layout-body-${pageId}"]`);
+    if (!root) return [] as string[];
+    return [...root.querySelectorAll("[data-element-container][data-selectable]")]
+      .map((el) => el.getAttribute("data-selectable") || "")
+      .filter((id) => id.length > 0);
+  });
+  for (const id of ids) {
+    await page.locator(`[data-selectable="${id}"]`).first().scrollIntoViewIfNeeded({ timeout: 2000 }).catch(() => undefined);
+  }
+}
+
 export async function readModel(page: Page): Promise<PageModel> {
-  return page.evaluate(() => {
+  await revealGrid(page);
+  const raw = await page.evaluate(() => {
     const title = document.title || "";
     const text = document.body?.innerText || "";
     const canvas = document.querySelector('[data-testid="workbook-canvas"]');
@@ -500,37 +691,53 @@ export async function readModel(page: Page): Promise<PageModel> {
         .filter((value) => value.length > 0);
     }
 
-    function labelOf(container: Element): string {
+    function titlesOf(container: Element): string[] {
       const own = titlesOwnedBy(container);
-      if (own.length === 1) return own[0];
-      if (own.length > 1) return own.join(" ");
+      if (own.length > 0) return own;
       const nested = [...container.querySelectorAll("[data-element-container]")].filter((node) => node !== container);
       const nestedLabels = nested
         .map((node) => titlesOwnedBy(node))
         .filter((titles) => titles.length === 1)
-        .map((titles) => titles[0]);
-      return nestedLabels.length === 1 ? nestedLabels[0] : "";
+        .map((titles) => titles[0] ?? "");
+      return nestedLabels.length === 1 ? nestedLabels : [];
     }
 
+    type RawComponent = {
+      id: string;
+      titles: string[];
+      textTileText?: string;
+      layoutId: string;
+      x: number;
+      y: number;
+      width: number;
+      height: number;
+    };
+    type RawGroup = {
+      layoutId: string;
+      layout: { x: number; y: number; width: number; height: number };
+      components: RawComponent[];
+    };
+
     const selected = pages.find((tab) => tab.selected) ?? pages[0];
-    const groups: Group[] = [];
+    const groups: RawGroup[] = [];
     if (selected) {
       const root = document.querySelector(`[data-layout-id="layout-body-${selected.id}"]`);
       const layouts = root ? [root, ...root.querySelectorAll("[data-layout-id]")] : [];
       for (const layout of layouts) {
         const host = layout.querySelector(":scope > [data-elements]");
         if (!host) continue;
-        const components: ComponentInfo[] = [];
+        const components: RawComponent[] = [];
         for (const child of host.children) {
           if (!child.hasAttribute("data-element-container")) continue;
-          const label = labelOf(child);
-          if (!label) continue;
           const id = child.getAttribute("data-selectable") || "";
           if (!id) continue;
+          const titles = titlesOf(child);
+          const textTile = !child.querySelector('[role="grid"], table');
           const rect = child.getBoundingClientRect();
           components.push({
             id,
-            label,
+            titles,
+            textTileText: textTile ? child.textContent || "" : undefined,
             layoutId: layout.getAttribute("data-layout-id") || "",
             x: rect.x,
             y: rect.y,
@@ -549,6 +756,27 @@ export async function readModel(page: Page): Promise<PageModel> {
     }
     return { pages, groups, signedOut };
   });
+
+  const groups: Group[] = [];
+  for (const group of raw.groups) {
+    const components: ComponentInfo[] = [];
+    for (const component of group.components) {
+      const label = componentLabel(component.titles, component.textTileText);
+      if (!label) continue;
+      components.push({
+        id: component.id,
+        label,
+        layoutId: component.layoutId,
+        x: component.x,
+        y: component.y,
+        width: component.width,
+        height: component.height,
+      });
+    }
+    if (components.length === 0) continue;
+    groups.push({ layoutId: group.layoutId, layout: group.layout, components });
+  }
+  return { pages: raw.pages, groups, signedOut: raw.signedOut };
 }
 
 async function choosePage(page: Page, requested: string | undefined): Promise<void> {
@@ -626,22 +854,26 @@ export async function selectElement(page: Page, id: string, label: string): Prom
   } catch {
     fail(`${label}: element-${id} is not on the page`);
   }
-  const point = await page.evaluate((elementId) => {
+  const measured = await page.evaluate((elementId) => {
     const host = document.querySelector(`[data-testid="element-${elementId}"]`);
-    if (!host) return null;
+    if (!(host instanceof HTMLElement)) return null;
     const ownTitle = [...host.querySelectorAll('[data-testid="dynamic-title"]')].find((node) => {
       return node.closest('[data-testid^="element-"]') === host;
     });
-    const target = ownTitle ?? host;
-    const rect = target.getBoundingClientRect();
-    const x = ownTitle ? rect.left + rect.width / 2 : rect.left + Math.min(8, rect.width / 2);
-    const y = ownTitle ? rect.top + rect.height / 2 : rect.top + Math.min(8, rect.height / 2);
-    return { x, y, width: window.innerWidth, height: window.innerHeight };
+    const hostRect = host.getBoundingClientRect();
+    const titleRect = ownTitle?.getBoundingClientRect();
+    const preferred = titleRect
+      ? { x: titleRect.left + titleRect.width / 2, y: titleRect.top + titleRect.height / 2 }
+      : { x: hostRect.left + Math.min(8, hostRect.width / 2), y: hostRect.top + Math.min(8, hostRect.height / 2) };
+    return {
+      rect: { x: hostRect.x, y: hostRect.y, width: hostRect.width, height: hostRect.height },
+      preferred,
+      viewport: { width: window.innerWidth, height: window.innerHeight },
+    };
   }, id);
-  if (!point) fail(`${label}: element-${id} is not on the page`);
-  if (point.x < 0 || point.y < 0 || point.x > point.width || point.y > point.height) {
-    fail(`${label}: element-${id} is outside the viewport`);
-  }
+  if (!measured) fail(`${label}: element-${id} is not on the page`);
+  const point = visibleClick(measured.rect, measured.preferred, measured.viewport);
+  if (!point) fail(`${label}: element-${id} is outside the viewport`);
   try {
     await page.mouse.click(point.x, point.y);
   } catch (error) {
@@ -919,6 +1151,17 @@ async function dragUntilSettled(
   return landed;
 }
 
+async function readElementBox(page: Page, id: string): Promise<{ width: number; height: number }> {
+  const box = await page.evaluate((elementId) => {
+    const el = document.querySelector(`[data-testid="element_${elementId}"]`);
+    if (!(el instanceof HTMLElement)) return null;
+    const rect = el.getBoundingClientRect();
+    return { width: rect.width, height: rect.height };
+  }, id);
+  if (!box || box.width <= 0 || box.height <= 0) fail(`No box for element ${id}`);
+  return box;
+}
+
 async function moveEdge(
   page: Page,
   id: string,
@@ -929,51 +1172,28 @@ async function moveEdge(
 ): Promise<void> {
   let area = await readGridArea(page, id);
   if (area[edge] === goal) return;
+  const box = await readElementBox(page, id);
+  let unit: number;
+  try {
+    unit = unitPixels(box, area, edge);
+  } catch (error) {
+    fail(error instanceof Error ? error.message : String(error));
+  }
+  const budget = Math.abs(goal - area[edge]) + 8;
 
-  for (let attempt = 1; attempt <= MAX_ATTEMPTS && area[edge] !== goal; attempt += 1) {
+  for (let attempt = 1; attempt <= budget && area[edge] !== goal; attempt += 1) {
     const before = area;
-    const direction: 1 | -1 = before[edge] < goal ? 1 : -1;
-    area = await dragUntilSettled(page, id, edge, direction, NUDGE_PX, before, onChanged, label);
+    const pixels = nextDragPixels(goal - before[edge], unit);
+    const direction: 1 | -1 = pixels > 0 ? 1 : -1;
+    area = await dragUntilSettled(page, id, edge, direction, Math.abs(pixels), before, onChanged, label);
     if (area[edge] === before[edge]) {
-      area = await dragUntilSettled(page, id, edge, direction, MAX_DRAG_PX, before, onChanged, label);
-      if (area[edge] === before[edge]) {
-        fail(`${label}: ${edge} did not move (area ${formatGridArea(area)})`);
-      }
-    }
-    if (area[edge] === goal) return;
-    if (overshot(before[edge], area[edge], goal)) {
-      const back: 1 | -1 = direction === 1 ? -1 : 1;
-      let correction: GestureResult;
-      try {
-        correction = await dragEdge(page, id, edge, back, CORRECT_PX, label);
-      } catch (error) {
-        if (error instanceof Exit) throw error;
-        const afterError = await readSettledGridArea(page, id);
-        if (areaDiffers(before, afterError)) onChanged();
-        const detail = error instanceof Error ? error.message : String(error);
-        fail(`${label}: ${edge} correction failed: ${detail} (area ${formatGridArea(afterError)})`);
-      }
-      if (!correction.ok) {
-        fail(
-          `${label}: ${edge} overshot ${goal} and the correction did not run (${correction.reason}) (area ${formatGridArea(area)})`,
-        );
-      }
-      const corrected = await readSettledGridArea(page, id);
-      if (areaDiffers(before, corrected)) onChanged();
-      const correctionDrift = driftReason(edge, before, corrected);
-      if (correctionDrift) {
-        fail(`${label}: ${edge} correction changed ${correctionDrift} (area ${formatGridArea(corrected)})`);
-      }
-      if (corrected[edge] !== goal) {
-        fail(
-          `${label}: ${edge} overshot ${goal} and is ${corrected[edge]} after correction (area ${formatGridArea(corrected)})`,
-        );
-      }
-      return;
+      fail(`${label}: ${edge} did not move (area ${formatGridArea(area)})`);
     }
   }
 
-  fail(`${label}: ${edge} did not reach ${goal} after ${MAX_ATTEMPTS} attempts (area ${formatGridArea(area)})`);
+  if (area[edge] !== goal) {
+    fail(`${label}: ${edge} did not reach ${goal} after ${budget} attempts (area ${formatGridArea(area)})`);
+  }
 }
 
 async function readSiblingAreas(page: Page, id: string): Promise<{ id: string; area: GridArea }[]> {
@@ -1112,22 +1332,50 @@ export async function runPlace(args: string[]): Promise<void> {
     }
 
     const segment = pathSegmentFromUrl(page.url());
-    const identity = { ...findWorkbook(segment), pathSegment: segment };
+    const identity = { ...workbookIdentity(segment), pathSegment: segment };
     let edited = false;
     const onChanged = () => {
       if (edited) return;
       edited = true;
       markOwned(identity);
     };
+    const moving = new Set(located.map((item) => item.id));
+    const obstacles: GridArea[] = [];
+    for (const component of components) {
+      if (moving.has(component.id)) continue;
+      obstacles.push(await readGridArea(page, component.id));
+    }
+    const items: PageItem[] = [];
+    for (let index = 0; index < located.length; index += 1) {
+      const item = located[index];
+      if (!item) continue;
+      items.push({ index, current: await readGridArea(page, item.id), target: item.area });
+    }
     try {
-      for (const item of located) {
-        await placeArea(page, item.id, item.area, onChanged, item.title);
+      if (!targetsOccupied(items, obstacles)) {
+        for (const item of located) {
+          await placeArea(page, item.id, item.area, onChanged, item.title);
+        }
+      } else {
+        let steps: PlacementStep[];
+        try {
+          steps = planPage(items, obstacles);
+        } catch (error) {
+          if (error instanceof Exit) throw error;
+          fail(error instanceof Error ? error.message : String(error));
+        }
+        for (const step of steps) {
+          if (step.index === null) fail("Placement step names a missing neighbor");
+          const item = located[step.index];
+          if (!item) fail("Placement step names a missing neighbor");
+          await moveBetween(page, item.id, step.area, onChanged, item.title);
+        }
       }
     } catch (error) {
       if (edited) markOwned(identity);
       throw error;
     }
     console.log(page.url());
-    console.log(identity.workbookId ?? segment);
+    console.log(identity.urlId);
   });
 }

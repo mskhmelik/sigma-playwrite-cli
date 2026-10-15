@@ -111,7 +111,7 @@ is required. The canvas title becomes --title, not the file name. rename changes
 one canvas title from --title to --name. set-column --set format=date shows each
 --column as a date, YYYY-MM-DD.
 
-Chrome must already be running with --remote-debugging-port=9222. Commands reuse
+Chrome must already be running with --remote-debugging-port=9333. Commands reuse
 the open workbook tab and do not open or close a tab per command. This tool
 never quits Chrome.
 `;

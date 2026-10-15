@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { sameEditor } from "../dist/chrome.js";
+import { RELAUNCH_MESSAGE, sameEditor } from "../dist/chrome.js";
 
 const workbook = "https://app.sigmacomputing.com/papercrane/workbook/abc123/edit";
 
@@ -13,6 +13,12 @@ test("same workbook with a different query is the same editor", () => {
 test("a different workbook is not the same editor", () => {
   const other = "https://app.sigmacomputing.com/papercrane/workbook/other/edit";
   assert.equal(sameEditor(workbook, other), false);
+});
+
+test("relaunch uses the dedicated Chrome profile on port 9333", () => {
+  assert.match(RELAUNCH_MESSAGE, /9333/);
+  assert.match(RELAUNCH_MESSAGE, /\.sigma-playwrite-cli\/chrome-data/);
+  assert.equal(RELAUNCH_MESSAGE.includes("Application Support/Google/Chrome"), false);
 });
 
 test("a non-edit URL is not the same editor", () => {
