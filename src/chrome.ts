@@ -1,13 +1,13 @@
 import { chromium, type Browser, type BrowserContext, type Page } from "playwright";
 import { fail } from "./errors.js";
 
-export const CDP_URL = process.env.SIGMA_PLAYWRITE_CLI_CDP || "http://127.0.0.1:9222";
+export const CDP_URL = process.env.SIGMA_PLAYWRITE_CLI_CDP || "http://127.0.0.1:9333";
 
 export const RELAUNCH_MESSAGE = `Chrome is not listening on ${CDP_URL}.
 Quit Chrome yourself, then:
 "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \\
-  --remote-debugging-port=9222 \\
-  --user-data-dir="$HOME/Library/Application Support/Google/Chrome"`;
+  --remote-debugging-port=9333 \\
+  --user-data-dir="$HOME/.sigma-playwrite-cli/chrome-data"`;
 
 /** Survives navigation, so the next command finds the tab this CLI opened. */
 const CLI_TAB = "sigma-playwrite-cli";

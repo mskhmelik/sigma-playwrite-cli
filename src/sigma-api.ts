@@ -87,6 +87,11 @@ export function segmentMatchesEntry(pathSegment: string, entryUrl: string): bool
   return pathSegment === urlId || pathSegment.endsWith(`-${urlId}`);
 }
 
+/** Ledger identity from the workbook URL. Does not call the Sigma CLI. */
+export function workbookIdentity(pathSegment: string): { urlId: string } {
+  return { urlId: pathSegment };
+}
+
 /** Resolve the API workbook id before any Playwright edit. Read-only. */
 export function findWorkbook(pathSegment: string): { workbookId?: string; urlId: string } {
   let pageToken: string | undefined;
