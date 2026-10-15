@@ -25,7 +25,9 @@ export async function addEmptyInputTable(
   let found: { inputTable: boolean };
   try {
     found = await editor.findElement(title);
-  } catch {
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "";
+    if (!message.includes("was not found")) throw error;
     if (!first || first.type !== "text") throw new Error("first column must be text");
     await editor.addInputTable(title, first.name);
     for (const column of columns.slice(1)) {

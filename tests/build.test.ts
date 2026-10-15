@@ -22,7 +22,10 @@ function buildEditor(pages: string[], columns: string[] = []): { editor: Editor;
     },
     findElement: async (title) => {
       calls.push(`findElement:${title}`);
-      if (title === "missing") throw new Error("not on the page");
+      if (title === "missing") throw new Error(`Title ${JSON.stringify(title)} was not found. Nothing was changed.`);
+      if (title === "duplicate") {
+        throw new Error(`Title ${JSON.stringify(title)} matches 2 components. Nothing was changed.`);
+      }
       return { title, inputTable: title === "names" };
     },
     setControl: async () => {},
@@ -85,6 +88,15 @@ test("addNamedPage stops when the page already exists", async () => {
   const { editor, calls } = buildEditor(["test"]);
   await assert.rejects(() => addNamedPage(editor, "test"), /duplicate page/);
   assert.deepEqual(calls, ["findPage:test"]);
+});
+
+test("a title that matches more than one element does not create a table", async () => {
+  const { editor, calls } = buildEditor([]);
+  await assert.rejects(
+    () => addEmptyInputTable(editor, "duplicate", [{ name: "pk_person", type: "text" }]),
+    /matches 2 components/,
+  );
+  assert.ok(!calls.some((call) => call.startsWith("addInputTable")));
 });
 
 test("a date-first input table is rejected before the table is created", async () => {
