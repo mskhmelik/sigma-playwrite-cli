@@ -34,6 +34,7 @@ function columnEditor(options: {
     deleteRow: async () => {},
     addPage: async () => {},
     addInputTable: async () => {},
+    addTypedColumn: async () => {},
     addTextControl: async () => {},
     addSegmentedControl: async (title, options) => {
       calls.push(`addSegmentedControl:${title}:${options.join(",")}`);

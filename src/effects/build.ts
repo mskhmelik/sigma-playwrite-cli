@@ -16,10 +16,29 @@ export async function addNamedPage(editor: Editor, name: string): Promise<void> 
   throw new Error("duplicate page");
 }
 
-export async function addEmptyInputTable(editor: Editor, title: string, column: string): Promise<void> {
-  if (!title.trim()) throw new Error("missing title");
-  if (!column.trim()) throw new Error("missing column");
-  await editor.addInputTable(title, column);
+export async function addEmptyInputTable(
+  editor: Editor,
+  title: string,
+  columns: { name: string; type: "text" | "date" }[],
+): Promise<void> {
+  const first = columns[0];
+  let found: { inputTable: boolean };
+  try {
+    found = await editor.findElement(title);
+  } catch {
+    if (!first || first.type !== "text") throw new Error("first column must be text");
+    await editor.addInputTable(title, first.name);
+    for (const column of columns.slice(1)) {
+      await editor.addTypedColumn(title, column.name, column.type);
+    }
+    return;
+  }
+  if (!found.inputTable) throw new Error("not an input table");
+  const present = await editor.listColumns(title);
+  for (const column of columns) {
+    if (present.includes(column.name)) continue;
+    await editor.addTypedColumn(title, column.name, column.type);
+  }
 }
 
 export async function addNameControl(editor: Editor, kind: HandleKind, handle: string): Promise<void> {

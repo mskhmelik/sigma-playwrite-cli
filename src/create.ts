@@ -29,9 +29,32 @@ import { workbookEditor } from "./workbook-editor.js";
 
 type Bag = Record<string, string[]>;
 
+export type InputColumn = { name: string; type: "text" | "date" };
+
+function inputColumns(values: string[]): InputColumn[] {
+  if (values.length === 0) fail("add input-table requires --column");
+  const columns: InputColumn[] = [];
+  const seen = new Set<string>();
+  for (const value of values) {
+    const parts = value.split(":");
+    const name = (parts[0] ?? "").trim();
+    const type = parts.length === 1 ? "text" : (parts[1] ?? "").trim();
+    if (!name || parts.length > 2) {
+      fail(`add input-table column must be name or name:text or name:date, not ${JSON.stringify(value)}`);
+    }
+    if (type !== "text" && type !== "date") {
+      fail(`add input-table column type must be text or date, not ${JSON.stringify(type)}`);
+    }
+    if (seen.has(name)) fail(`Duplicate --column ${name}`);
+    seen.add(name);
+    columns.push({ name, type });
+  }
+  return columns;
+}
+
 export type CreateCommand =
   | { kind: "add-page"; url: string; page?: string; name: string }
-  | { kind: "input-table"; url: string; page?: string; title: string; column: string }
+  | { kind: "input-table"; url: string; page?: string; title: string; columns: InputColumn[] }
   | { kind: "control"; url: string; page?: string; controlKind: HandleKind; handle: string }
   | { kind: "segmented"; url: string; page?: string; controlKind: HandleKind; handle: string; options: string[] }
   | { kind: "button"; url: string; page?: string; title: string }
@@ -140,9 +163,7 @@ export function parseCreate(command: string, args: string[]): CreateCommand {
       const title = one(bag, "title");
       if (!title) fail("add input-table requires --title");
       requireTableTitle(title);
-      const column = one(bag, "column");
-      if (!column) fail("add input-table requires --column");
-      return { kind: "input-table", url, page, title, column };
+      return { kind: "input-table", url, page, title, columns: inputColumns(bag.column ?? []) };
     }
     if (type === "control") {
       const control = one(bag, "control");
@@ -297,7 +318,7 @@ export async function applyCreate(editor: Editor, parsed: CreateCommand, mark: (
   try {
     if (parsed.kind === "add-page") await addNamedPage(editor, parsed.name);
     else if (parsed.kind === "add-modal") await addNamedModal(editor, parsed.name);
-    else if (parsed.kind === "input-table") await addEmptyInputTable(editor, parsed.title, parsed.column);
+    else if (parsed.kind === "input-table") await addEmptyInputTable(editor, parsed.title, parsed.columns);
     else if (parsed.kind === "control") await addNameControl(editor, parsed.controlKind, parsed.handle);
     else if (parsed.kind === "segmented") {
       await addSegmentedControl(editor, parsed.controlKind, parsed.handle, parsed.options);

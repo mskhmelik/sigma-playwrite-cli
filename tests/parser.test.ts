@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { test } from "node:test";
+import { parseCreate } from "../dist/create.js";
 
 const url = "https://app.sigmacomputing.com/papercrane/workbook/abcdefghij/edit";
 
@@ -262,4 +263,83 @@ test("add container without --title is rejected", () => {
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /add container requires --title/);
   assert.doesNotMatch(result.stderr, /Unknown command/);
+});
+
+test("help shows repeated input-table columns as name:text or name:date", () => {
+  const result = run(["--help"]);
+  assert.equal(result.status, 0);
+  assert.match(result.stdout, /--column <name>\[:text\|date\] \[--column <name>\[:text\|date\]\.\.\.\]/);
+});
+
+test("input-table columns stay in order as text then date", () => {
+  const parsed = parseCreate("add", [
+    "--url",
+    url,
+    "--type",
+    "input-table",
+    "--title",
+    "BE - Input - People",
+    "--column",
+    "pk_person:text",
+    "--column",
+    "dt_start:date",
+  ]);
+  assert.equal(parsed.kind, "input-table");
+  if (parsed.kind !== "input-table") return;
+  assert.deepEqual(parsed.columns, [
+    { name: "pk_person", type: "text" },
+    { name: "dt_start", type: "date" },
+  ]);
+});
+
+test("a bare input-table column is text", () => {
+  const parsed = parseCreate("add", [
+    "--url",
+    url,
+    "--type",
+    "input-table",
+    "--title",
+    "BE - Input - People",
+    "--column",
+    "pk_person",
+  ]);
+  assert.equal(parsed.kind, "input-table");
+  if (parsed.kind !== "input-table") return;
+  assert.deepEqual(parsed.columns, [{ name: "pk_person", type: "text" }]);
+});
+
+test("a repeated input-table column name is rejected", () => {
+  assert.throws(
+    () =>
+      parseCreate("add", [
+        "--url",
+        url,
+        "--type",
+        "input-table",
+        "--title",
+        "BE - Input - People",
+        "--column",
+        "pk_person:text",
+        "--column",
+        "pk_person:date",
+      ]),
+    /Duplicate --column pk_person/,
+  );
+});
+
+test("an input-table column type other than text or date is rejected", () => {
+  assert.throws(
+    () =>
+      parseCreate("add", [
+        "--url",
+        url,
+        "--type",
+        "input-table",
+        "--title",
+        "BE - Input - People",
+        "--column",
+        "pk_person:number",
+      ]),
+    /column type must be text or date/,
+  );
 });

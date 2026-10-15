@@ -12,6 +12,8 @@ export type Editor = {
   deleteRow(title: string): Promise<void>;
   addPage(name: string): Promise<void>;
   addInputTable(title: string, column: string): Promise<void>;
+  /** Add one Text or Date column. The caller skips a name that is already a header. */
+  addTypedColumn(title: string, name: string, type: "text" | "date"): Promise<void>;
   addTextControl(title: string): Promise<void>;
   addButton(title: string): Promise<void>;
   addModal(name: string): Promise<void>;

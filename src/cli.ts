@@ -23,7 +23,7 @@ USAGE
   sigma-playwrite-cli add --url <workbook-url> [--page <page-name>] --type text [--title <title>]
   sigma-playwrite-cli add-page --url <workbook-url> [--page <page-name>] --name <page>
   sigma-playwrite-cli add-modal --url <workbook-url> [--page <page-name>] --name <page>
-  sigma-playwrite-cli add --url <workbook-url> [--page <page-name>] --type input-table --title <element> --column <column>
+  sigma-playwrite-cli add --url <workbook-url> [--page <page-name>] --type input-table --title <element> --column <name>[:text|date] [--column <name>[:text|date]...]
   sigma-playwrite-cli add --url <workbook-url> [--page <page-name>] --type control --kind c|v --handle <name>
   sigma-playwrite-cli add --url <workbook-url> [--page <page-name>] --type control --kind c|v --handle <name> --control segmented --option <value> [--option <value>...]
   sigma-playwrite-cli add --url <workbook-url> [--page <page-name>] --type button --title <label>
@@ -85,7 +85,9 @@ One --title is enough. The first element is clicked, and each later element is
 added with the Meta modifier.
 
 add-page, add-modal, add input-table, add control, add button, and set-action
-build a page. An input table title is BE - <Name> or FE - <Name>. set-action
+build a page. An input table title is BE - <Name> or FE - <Name>. Repeat --column
+as name, name:text, or name:date, in the order the columns should appear. A bare
+name is text. The first column of a new table is text. set-action
 insert-row saves Insert row on a button, taking one column from c.<name> or
 v.<name>. set-action if-else opens --modal when that column already contains
 the control, and otherwise inserts the row. set-action close-modal closes the

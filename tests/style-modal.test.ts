@@ -24,6 +24,7 @@ function modalEditor(findPage: (name: string) => Promise<void>): { editor: Edito
     deleteRow: async () => {},
     addPage: async () => {},
     addInputTable: async () => {},
+    addTypedColumn: async () => {},
     addTextControl: async () => {},
     addButton: async () => {},
     addModal: async () => {},
