@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { paddingInput, paddingOn, textColorLanded, uniqueIds } from "../dist/edit.js";
+import { paddingBoxes, paddingInput, paddingOn, textColorLanded, uniqueIds } from "../dist/edit.js";
 import { componentId, elementHosts } from "../dist/place.js";
 
 describe("text element ids", () => {
@@ -18,6 +18,9 @@ describe("padding", () => {
     assert.equal(paddingInput(candidates), 1);
     assert.equal(paddingOn("padding: calc(2 * var(--space-unit));", "16px"), true);
     assert.equal(paddingOn("", "0px"), false);
+    assert.deepEqual(paddingBoxes(['[data-testid="element_rrV6BMc4FF"]']), [
+      '[data-testid="element_rrV6BMc4FF"] [data-testid="text-element-box"]',
+    ]);
   });
 });
 

@@ -130,6 +130,10 @@ export function paddingOn(style: string, computedPx: string): boolean {
   return computedPx === "16px" || style.includes("calc(2 * var(--space-unit))");
 }
 
+export function paddingBoxes(hosts: readonly string[]): string[] {
+  return hosts.map((host) => `${host} [data-testid="text-element-box"]`);
+}
+
 export function textColorLanded(html: string, selection: string): boolean {
   const mark = /<fontcolor\b[^>]*style="[^"]*color:\s*rgb\(255,\s*255,\s*255\)/i.test(html);
   return mark && selection.length > 0;
@@ -494,7 +498,7 @@ async function paddingCandidates(page: Page): Promise<PaddingCandidate[]> {
   });
 }
 
-async function applyPadding(page: Page, value: string, touch: () => void): Promise<void> {
+async function applyPadding(page: Page, id: string, value: string, touch: () => void): Promise<void> {
   const wantOn = value === "on";
   await openFormat(page);
   const candidates = await paddingCandidates(page);
@@ -534,16 +538,18 @@ async function applyPadding(page: Page, value: string, touch: () => void): Promi
   if ("clicked" in clicked && clicked.clicked) touch();
   if (!wantOn) return;
   const mark = await page
-    .waitForFunction(() => {
-      const box = document.querySelector('[data-testid="text-element-box"]');
-      if (!(box instanceof HTMLElement)) return null;
-      const style = `${box.getAttribute("style") || ""} ${getComputedStyle(box).padding}`;
-      const computedPx = getComputedStyle(box).paddingTop;
-      if (computedPx === "16px" || style.includes("calc(2 * var(--space-unit))")) {
-        return { style, computedPx };
+    .waitForFunction((selectors) => {
+      for (const selector of selectors) {
+        const box = document.querySelector(selector);
+        if (!(box instanceof HTMLElement)) continue;
+        const style = `${box.getAttribute("style") || ""} ${getComputedStyle(box).padding}`;
+        const computedPx = getComputedStyle(box).paddingTop;
+        if (computedPx === "16px" || style.includes("calc(2 * var(--space-unit))")) {
+          return { style, computedPx };
+        }
       }
       return null;
-    }, undefined, { timeout: 3000 })
+    }, paddingBoxes(elementHosts(id)), { timeout: 3000 })
     .then((handle) => handle.jsonValue())
     .catch(() => null);
   if (!mark || !paddingOn(mark.style, mark.computedPx)) {
@@ -568,7 +574,7 @@ async function applySetting(
     return;
   }
   if (setting.key === "padding") {
-    await applyPadding(page, setting.value, touch);
+    await applyPadding(page, id, setting.value, touch);
     return;
   }
   if (setting.key === "color") {
