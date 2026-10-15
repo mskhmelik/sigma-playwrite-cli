@@ -9,6 +9,7 @@ import {
   componentLabel,
   planPage,
   planPlacement,
+  targetsOccupied,
   unitPixels,
   visibleClick,
   type GridArea,
@@ -143,6 +144,7 @@ test("a stack becomes three across without overlapping on the way", () => {
       target: { rowStart: 1, colStart: 17, rowEnd: 11, colEnd: 25 },
     },
   ];
+  assert.equal(targetsOccupied(items, []), true);
   const steps = planPage(items, []);
   const live = items.map((item) => ({ ...item.current }));
   for (const step of steps) {
@@ -162,6 +164,18 @@ test("a stack becomes three across without overlapping on the way", () => {
   assert.deepEqual(live[0], items[0]?.target);
   assert.deepEqual(live[1], items[1]?.target);
   assert.deepEqual(live[2], items[2]?.target);
+});
+
+test("a free target beside a full-width neighbor does not take the lane", () => {
+  const item = {
+    index: 0,
+    current: { rowStart: 4, colStart: 1, rowEnd: 5, colEnd: 13 },
+    target: { rowStart: 3, colStart: 1, rowEnd: 4, colEnd: 13 },
+  };
+  const neighbor: GridArea = { rowStart: 1, colStart: 1, rowEnd: 3, colEnd: 13 };
+  assert.equal(targetsOccupied([item], [neighbor]), false);
+  const plan = planPlacement(item.current, item.target, [neighbor]);
+  assert.ok(plan.some((step) => step.index === 0));
 });
 
 test("column halves are both non-empty", () => {

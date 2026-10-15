@@ -498,6 +498,18 @@ function rowSpanOf(area: GridArea): number {
   return area.rowEnd - area.rowStart;
 }
 
+/** True when a target still sits on another element, so the lane plan is required. */
+export function targetsOccupied(items: readonly PageItem[], obstacles: readonly GridArea[]): boolean {
+  for (const item of items) {
+    const others = [
+      ...obstacles,
+      ...items.filter((other) => other.index !== item.index).map((other) => other.current),
+    ];
+    if (others.some((other) => overlaps(item.target, other))) return true;
+  }
+  return false;
+}
+
 /**
  * Move a whole layout when targets are still occupied.
  * Clear one column lane, park every item below the page, then write the final cells.
@@ -1339,18 +1351,25 @@ export async function runPlace(args: string[]): Promise<void> {
       if (!item) continue;
       items.push({ index, current: await readGridArea(page, item.id), target: item.area });
     }
-    let steps: PlacementStep[];
     try {
-      steps = planPage(items, obstacles);
-    } catch (error) {
-      fail(error instanceof Error ? error.message : String(error));
-    }
-    try {
-      for (const step of steps) {
-        if (step.index === null) fail("Placement step names a missing neighbor");
-        const item = located[step.index];
-        if (!item) fail("Placement step names a missing neighbor");
-        await moveBetween(page, item.id, step.area, onChanged, item.title);
+      if (!targetsOccupied(items, obstacles)) {
+        for (const item of located) {
+          await placeArea(page, item.id, item.area, onChanged, item.title);
+        }
+      } else {
+        let steps: PlacementStep[];
+        try {
+          steps = planPage(items, obstacles);
+        } catch (error) {
+          if (error instanceof Exit) throw error;
+          fail(error instanceof Error ? error.message : String(error));
+        }
+        for (const step of steps) {
+          if (step.index === null) fail("Placement step names a missing neighbor");
+          const item = located[step.index];
+          if (!item) fail("Placement step names a missing neighbor");
+          await moveBetween(page, item.id, step.area, onChanged, item.title);
+        }
       }
     } catch (error) {
       if (edited) markOwned(identity);
