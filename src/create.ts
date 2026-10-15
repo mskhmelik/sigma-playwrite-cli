@@ -3,6 +3,7 @@ import {
   addEmptyInputTable,
   addNameControl,
   addNamedButton,
+  addNamedContainer,
   addNamedPage,
   addNamedModal,
   addSegmentedControl,
@@ -21,7 +22,7 @@ import { fail } from "./errors.js";
 import { requireControlKind, type HandleKind } from "./handles.js";
 import { markOwned, type OwnedWorkbook } from "./ledger.js";
 import { ensureEditor } from "./place.js";
-import { findWorkbook } from "./sigma-api.js";
+import { workbookIdentity } from "./sigma-api.js";
 import { requireSystemColumn } from "./system-columns.js";
 import { requireSentenceCase, requireTableTitle } from "./titles.js";
 import { workbookEditor } from "./workbook-editor.js";
@@ -34,6 +35,7 @@ export type CreateCommand =
   | { kind: "control"; url: string; page?: string; controlKind: HandleKind; handle: string }
   | { kind: "segmented"; url: string; page?: string; controlKind: HandleKind; handle: string; options: string[] }
   | { kind: "button"; url: string; page?: string; title: string }
+  | { kind: "container"; url: string; page?: string; handle: string; titles: string[] }
   | {
       kind: "set-action";
       url: string;
@@ -167,7 +169,15 @@ export function parseCreate(command: string, args: string[]): CreateCommand {
       requireSentenceCase(title, "add button --title");
       return { kind: "button", url, page, title };
     }
-    fail(`Unknown element type ${type ?? ""}. Known types: text, input-table, control, button`);
+    if (type === "container") {
+      allow(bag, ["url", "page", "type", "handle", "title"]);
+      const handle = one(bag, "handle");
+      if (!handle) fail("add container requires --handle");
+      const titles = bag.title ?? [];
+      if (titles.length === 0) fail("add container requires --title");
+      return { kind: "container", url, page, handle, titles };
+    }
+    fail(`Unknown element type ${type ?? ""}. Known types: text, input-table, control, button, container`);
   }
   if (command === "group-column") {
     allow(bag, ["url", "page", "title", "column", "with"]);
@@ -293,6 +303,7 @@ export async function applyCreate(editor: Editor, parsed: CreateCommand, mark: (
       await addSegmentedControl(editor, parsed.controlKind, parsed.handle, parsed.options);
     }
     else if (parsed.kind === "button") await addNamedButton(editor, parsed.title);
+    else if (parsed.kind === "container") await addNamedContainer(editor, parsed.handle, parsed.titles);
     else if (parsed.kind === "close-modal") await saveCloseModal(editor, parsed.title);
     else if (parsed.kind === "if-else") {
       await saveIfElse(
@@ -347,7 +358,7 @@ export async function runCreate(command: string, args: string[]): Promise<void> 
     const editor = workbookEditor(page);
     await applyCreate(editor, parsed, () => {
       const segment = pathSegmentFromUrl(page.url());
-      const identity: Omit<OwnedWorkbook, "markedAt"> = { ...findWorkbook(segment), pathSegment: segment };
+      const identity: Omit<OwnedWorkbook, "markedAt"> = { ...workbookIdentity(segment), pathSegment: segment };
       markOwned(identity);
     });
     console.log(page.url());

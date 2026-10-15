@@ -249,3 +249,17 @@ test("insert-row without --title is rejected", () => {
   assert.match(result.stderr, /insert-row requires --title/);
   assert.doesNotMatch(result.stderr, /Unknown command/);
 });
+
+test("add container without --handle is rejected", () => {
+  const result = run(["add", "--url", url, "--type", "container", "--title", "Employee"]);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /add container requires --handle/);
+  assert.doesNotMatch(result.stderr, /Unknown command/);
+});
+
+test("add container without --title is rejected", () => {
+  const result = run(["add", "--url", url, "--type", "container", "--handle", "variables_employee"]);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /add container requires --title/);
+  assert.doesNotMatch(result.stderr, /Unknown command/);
+});
