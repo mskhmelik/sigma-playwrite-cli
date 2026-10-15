@@ -6,6 +6,7 @@ import {
   confirmSelected,
   ensureEditor,
   applySize,
+  elementHosts,
   parseArea,
   parseSize,
   placeArea,
@@ -15,7 +16,7 @@ import {
   type ComponentInfo,
   type GridArea,
 } from "./place.js";
-import { findWorkbook } from "./sigma-api.js";
+import { workbookIdentity } from "./sigma-api.js";
 import { controlFor, parseSettings, validateSettings, type Setting } from "./settings.js";
 
 type Flags = {
@@ -61,7 +62,7 @@ function requireUrl(flags: Flags, command: string): string {
 async function identityFor(page: Page, url: string, requestedPage: string | undefined): Promise<Omit<OwnedWorkbook, "markedAt">> {
   await ensureEditor(page, url, requestedPage);
   const segment = pathSegmentFromUrl(page.url());
-  return { ...findWorkbook(segment), pathSegment: segment };
+  return { ...workbookIdentity(segment), pathSegment: segment };
 }
 
 function titlesOn(components: ComponentInfo[]): string {
@@ -84,9 +85,11 @@ export async function locateTitle(page: Page, title: string): Promise<ComponentI
     const root = pageId ? document.querySelector(`[data-layout-id="layout-body-${pageId}"]`) : document.body;
     if (!root) return [];
     const ids: string[] = [];
-    for (const node of root.querySelectorAll("[data-selectable]")) {
-      const id = node.getAttribute("data-selectable") || "";
-      if (!id) continue;
+    for (const node of root.querySelectorAll("[data-selectable], [data-testid^='element_']")) {
+      const selectable = node.getAttribute("data-selectable") || "";
+      const testId = node.getAttribute("data-testid") || "";
+      const id = selectable || (testId.startsWith("element_") ? testId.slice("element_".length) : "");
+      if (!id || ids.includes(id)) continue;
       const text = (node.textContent || "").replace(/\s+/g, " ").trim();
       if (text === wanted) ids.push(id);
     }
@@ -110,6 +113,32 @@ export async function locateTitle(page: Page, title: string): Promise<ComponentI
   );
 }
 
+export function uniqueIds(ids: readonly string[]): string[] {
+  return [...new Set(ids)];
+}
+
+export type PaddingCandidate = { kind: "label" | "input"; text: string; row: number };
+
+export function paddingInput(candidates: readonly PaddingCandidate[]): number | null {
+  const row = candidates.find((item) => item.kind === "label" && item.text === "Padding")?.row;
+  if (row === undefined) return null;
+  const index = candidates.findIndex((item) => item.kind === "input" && item.text === "Select" && item.row === row);
+  return index < 0 ? null : index;
+}
+
+export function paddingOn(style: string, computedPx: string): boolean {
+  return computedPx === "16px" || style.includes("calc(2 * var(--space-unit))");
+}
+
+export function paddingBoxes(hosts: readonly string[]): string[] {
+  return hosts.map((host) => `${host} [data-testid="text-element-box"]`);
+}
+
+export function textColorLanded(html: string, selection: string): boolean {
+  const mark = /<fontcolor\b[^>]*style="[^"]*color:\s*rgb\(255,\s*255,\s*255\)/i.test(html);
+  return mark && selection.length > 0;
+}
+
 async function selectableIds(page: Page): Promise<string[]> {
   return page.evaluate(() => {
     const selected =
@@ -124,7 +153,7 @@ async function selectableIds(page: Page): Promise<string[]> {
       if (id) ids.push(id);
     }
     return ids;
-  });
+  }).then(uniqueIds);
 }
 
 async function controlNames(page: Page): Promise<string> {
@@ -146,15 +175,17 @@ async function controlNames(page: Page): Promise<string> {
 }
 
 async function detectType(page: Page, id: string): Promise<string> {
-  return page.evaluate((elementId) => {
-    const host =
-      document.querySelector(`[data-selectable="${elementId}"]`) ??
-      document.querySelector(`[data-testid="element-${elementId}"]`);
-    if (!(host instanceof HTMLElement)) return "";
-    if (host.querySelector('[role="grid"], [role="table"], [role="columnheader"]')) return "table";
-    if (host.querySelector("[contenteditable='true'], [contenteditable='']")) return "text";
+  return page.evaluate((selectors) => {
+    const hosts = selectors
+      .map((selector) => document.querySelector(selector))
+      .filter((node): node is HTMLElement => node instanceof HTMLElement);
+    if (hosts.length === 0) return "";
+    if (hosts.some((host) => host.querySelector('[role="grid"], [role="table"], [role="columnheader"]'))) return "table";
+    if (hosts.some((host) => host.querySelector("[contenteditable='true'], [contenteditable=''], [data-testid='text-element-box']"))) {
+      return "text";
+    }
     return "";
-  }, id);
+  }, elementHosts(id));
 }
 
 function markOnFirstChange(identity: Omit<OwnedWorkbook, "markedAt">): { edited: () => boolean; touch: () => void } {
@@ -228,22 +259,22 @@ async function openFormat(page: Page): Promise<void> {
 
 async function applyContent(page: Page, id: string, text: string, touch: () => void, label: string): Promise<void> {
   const read = () =>
-    page.evaluate((elementId) => {
-      const host = document.querySelector(`[data-selectable="${elementId}"]`);
+    page.evaluate((selectors) => {
+      const host = selectors.map((selector) => document.querySelector(selector)).find((node) => node);
       const editable = host?.querySelector("[contenteditable='true'], [contenteditable='']");
       const source = editable ?? host;
       return (source?.textContent || "").replace(/\s+/g, " ").trim();
-    }, id);
+    }, elementHosts(id));
 
   if ((await read()) === text) return;
-  const point = await page.evaluate((elementId) => {
-    const host = document.querySelector(`[data-selectable="${elementId}"]`);
+  const point = await page.evaluate((selectors) => {
+    const host = selectors.map((selector) => document.querySelector(selector)).find((node) => node);
     const editable = host?.querySelector("[contenteditable='true'], [contenteditable='']");
     const target = editable ?? host;
     if (!(target instanceof HTMLElement)) return null;
     const rect = target.getBoundingClientRect();
     return { x: rect.left + Math.min(24, rect.width / 2), y: rect.top + Math.min(12, rect.height / 2) };
-  }, id);
+  }, elementHosts(id));
   if (!point) fail(`${label}: text field was not found`);
   await page.mouse.click(point.x, point.y);
   await page.keyboard.press("Meta+A");
@@ -309,12 +340,15 @@ async function applyFill(page: Page, value: string, touch: () => void): Promise<
       return { h: hue, s: max === 0 ? 0 : delta / max };
     }
     const dialog = [...document.querySelectorAll('[role="dialog"]')].find((node) =>
-      (node.textContent || "").includes("THEME PALETTE"),
+      (node.textContent || "").toUpperCase().includes("THEME PALETTE"),
     );
     if (!dialog) return { error: "Theme palette was not open" };
     const chips = [...dialog.querySelectorAll("div")].filter((node) => {
+      if (!(node instanceof HTMLElement)) return false;
       const rect = node.getBoundingClientRect();
-      return rect.width >= 16 && rect.width <= 28 && rect.height >= 16 && rect.height <= 28;
+      if (rect.width < 16 || rect.width > 28 || rect.height < 16 || rect.height > 28) return false;
+      const bg = getComputedStyle(node).backgroundColor;
+      return bg !== "transparent" && bg !== "rgba(0, 0, 0, 0)";
     });
     const rows = new Map<number, HTMLElement[]>();
     for (const node of chips) {
@@ -346,10 +380,30 @@ async function applyFill(page: Page, value: string, touch: () => void): Promise<
   await page.keyboard.press("Escape");
 }
 
-async function applyColor(page: Page, type: string, value: string, touch: () => void): Promise<void> {
+async function selectTileText(page: Page, id: string): Promise<string> {
+  const selection = await page.evaluate((selectors) => {
+    const host = selectors.map((selector) => document.querySelector(selector)).find((node) => node);
+    const editable = host?.querySelector("[contenteditable='true'], [contenteditable='']");
+    const target = editable ?? host?.querySelector('[data-testid="text-element-box"]') ?? host;
+    if (!(target instanceof HTMLElement)) return "";
+    target.focus();
+    const range = document.createRange();
+    range.selectNodeContents(target);
+    const selected = window.getSelection();
+    if (!selected) return "";
+    selected.removeAllRanges();
+    selected.addRange(range);
+    return selected.toString();
+  }, elementHosts(id));
+  if (!selection) fail(`${id}: text contents were not selected`);
+  return selection;
+}
+
+async function applyColor(page: Page, id: string, type: string, value: string, touch: () => void): Promise<void> {
   if (controlFor(type, "color") !== "text-toolbar") {
     fail(`color for ${type} does not use the text toolbar`);
   }
+  const selection = await selectTileText(page, id);
   const buttons = page.getByRole("button", { name: /^text color$/i });
   const count = await buttons.count();
   if (count === 0) {
@@ -396,28 +450,111 @@ async function applyColor(page: Page, type: string, value: string, touch: () => 
   touch();
   console.log(`color ${value} -> ${chip.bg}`);
   await page.keyboard.press("Escape");
+  if (value !== "white") return;
+  const html = await page.evaluate((selectors) => {
+    const host = selectors.map((selector) => document.querySelector(selector)).find((node) => node);
+    return host?.innerHTML || "";
+  }, elementHosts(id));
+  if (!textColorLanded(html, selection)) {
+    fail("Text color did not land. Expected <fontcolor style=\"color: rgb(255, 255, 255);\"> on the selected text.");
+  }
 }
 
-async function applyPadding(page: Page, value: string, touch: () => void): Promise<void> {
-  await openFormat(page);
-  const checkbox = page.getByRole("checkbox", { name: /^padding$/i });
-  const toggle = page.getByRole("switch", { name: /^padding$/i });
-  const button = page.getByRole("button", { name: /^padding$/i });
-  const choice =
-    (await checkbox.count()) === 1 ? checkbox :
-    (await toggle.count()) === 1 ? toggle :
-    (await button.count()) === 1 ? button :
-    null;
-  if (!choice) {
-    fail(`Padding control was not found.\n${await controlNames(page)}`);
-  }
+async function paddingCandidates(page: Page): Promise<PaddingCandidate[]> {
+  return page.evaluate(() => {
+    const panel = document.querySelector('[role="tabpanel"]') ?? document.body;
+    const rows = new Map<Element, number>();
+    function rowOf(node: Element): number {
+      let current: Element | null = node;
+      for (let depth = 0; depth < 8 && current; depth += 1) {
+        const leaves = [...current.querySelectorAll("*")].filter((child) => child.childElementCount === 0);
+        const hasLabel = leaves.some((child) => (child.textContent || "").replace(/\s+/g, " ").trim() === "Padding");
+        const hasInput = current.querySelector('input, [role="checkbox"]') !== null;
+        if (hasLabel && hasInput) {
+          const known = rows.get(current);
+          if (known !== undefined) return known;
+          const id = rows.size;
+          rows.set(current, id);
+          return id;
+        }
+        current = current.parentElement;
+      }
+      return -1;
+    }
+    const found: { kind: "label" | "input"; text: string; row: number }[] = [];
+    for (const node of panel.querySelectorAll("*")) {
+      if (node.childElementCount !== 0) continue;
+      const text = (node.textContent || "").replace(/\s+/g, " ").trim();
+      if (text !== "Padding") continue;
+      const row = rowOf(node);
+      if (row >= 0) found.push({ kind: "label", text, row });
+    }
+    for (const node of panel.querySelectorAll('input, [role="checkbox"]')) {
+      const row = rowOf(node);
+      if (row < 0) continue;
+      found.push({ kind: "input", text: node.getAttribute("aria-label") || "", row });
+    }
+    return found;
+  });
+}
+
+async function applyPadding(page: Page, id: string, value: string, touch: () => void): Promise<void> {
   const wantOn = value === "on";
-  const pressed = await choice.getAttribute("aria-checked");
-  const ariaPressed = await choice.getAttribute("aria-pressed");
-  const isOn = pressed === "true" || ariaPressed === "true" || (await choice.isChecked().catch(() => false));
-  if (isOn === wantOn) return;
-  await choice.click();
-  touch();
+  await openFormat(page);
+  const candidates = await paddingCandidates(page);
+  const index = paddingInput(candidates);
+  const picked = index === null ? null : candidates[index];
+  if (!picked) fail(`Padding control was not found.\n${await controlNames(page)}`);
+  const clicked = await page.evaluate(({ row, wantOn: turnOn }) => {
+    const panel = document.querySelector('[role="tabpanel"]') ?? document.body;
+    const rows = new Map<Element, number>();
+    function rowOf(node: Element): number {
+      let current: Element | null = node;
+      for (let depth = 0; depth < 8 && current; depth += 1) {
+        const leaves = [...current.querySelectorAll("*")].filter((child) => child.childElementCount === 0);
+        const hasLabel = leaves.some((child) => (child.textContent || "").replace(/\s+/g, " ").trim() === "Padding");
+        const hasInput = current.querySelector('input, [role="checkbox"]') !== null;
+        if (hasLabel && hasInput) {
+          const known = rows.get(current);
+          if (known !== undefined) return known;
+          const id = rows.size;
+          rows.set(current, id);
+          return id;
+        }
+        current = current.parentElement;
+      }
+      return -1;
+    }
+    const input = [...panel.querySelectorAll('input, [role="checkbox"]')].find((node) => {
+      return rowOf(node) === row && (node.getAttribute("aria-label") || "") === "Select";
+    });
+    if (!(input instanceof HTMLElement)) return { error: "Padding checkbox was not found" };
+    const on = input.getAttribute("aria-checked") === "true" || (input instanceof HTMLInputElement && input.checked);
+    if (on === turnOn) return { already: true };
+    input.click();
+    return { clicked: true };
+  }, { row: picked.row, wantOn });
+  if ("error" in clicked && clicked.error) fail(clicked.error);
+  if ("clicked" in clicked && clicked.clicked) touch();
+  if (!wantOn) return;
+  const mark = await page
+    .waitForFunction((selectors) => {
+      for (const selector of selectors) {
+        const box = document.querySelector(selector);
+        if (!(box instanceof HTMLElement)) continue;
+        const style = `${box.getAttribute("style") || ""} ${getComputedStyle(box).padding}`;
+        const computedPx = getComputedStyle(box).paddingTop;
+        if (computedPx === "16px" || style.includes("calc(2 * var(--space-unit))")) {
+          return { style, computedPx };
+        }
+      }
+      return null;
+    }, paddingBoxes(elementHosts(id)), { timeout: 3000 })
+    .then((handle) => handle.jsonValue())
+    .catch(() => null);
+  if (!mark || !paddingOn(mark.style, mark.computedPx)) {
+    fail("Padding did not turn on. Expected 16px, calc(2 * var(--space-unit)), on text-element-box.");
+  }
 }
 
 async function applySetting(
@@ -437,11 +574,11 @@ async function applySetting(
     return;
   }
   if (setting.key === "padding") {
-    await applyPadding(page, setting.value, touch);
+    await applyPadding(page, id, setting.value, touch);
     return;
   }
   if (setting.key === "color") {
-    await applyColor(page, type, setting.value, touch);
+    await applyColor(page, id, type, setting.value, touch);
     return;
   }
   fail(`Unknown setting ${setting.key}`);

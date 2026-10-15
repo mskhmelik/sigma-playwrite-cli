@@ -132,6 +132,21 @@ export function componentLabel(titles: readonly string[], textTileText: string |
   return line ?? "";
 }
 
+export function componentId(attrs: { selectable: string; testId: string }): string {
+  if (attrs.selectable) return attrs.selectable;
+  if (attrs.testId.startsWith("element_")) return attrs.testId.slice("element_".length);
+  if (attrs.testId.startsWith("element-")) return attrs.testId.slice("element-".length);
+  return "";
+}
+
+export function elementHosts(id: string): string[] {
+  return [
+    `[data-testid="element-${id}"]`,
+    `[data-testid="element_${id}"]`,
+    `[data-selectable="${id}"]`,
+  ];
+}
+
 /** One grid unit toward the goal. A later miss asks for one unit back. */
 export function nextDragPixels(remainingUnits: number, unitPx: number): number {
   if (remainingUnits === 0) return 0;
@@ -658,12 +673,16 @@ async function revealGrid(page: Page): Promise<void> {
     const pageId = (selected.getAttribute("data-testid") || "").replace(/^page-item-/, "");
     const root = document.querySelector(`[data-layout-id="layout-body-${pageId}"]`);
     if (!root) return [] as string[];
-    return [...root.querySelectorAll("[data-element-container][data-selectable]")]
-      .map((el) => el.getAttribute("data-selectable") || "")
-      .filter((id) => id.length > 0);
+    return [...root.querySelectorAll("[data-element-container][data-selectable], [data-testid^='element_']")]
+      .map((el) => {
+        const selectable = el.getAttribute("data-selectable") || "";
+        const testId = el.getAttribute("data-testid") || "";
+        return selectable || (testId.startsWith("element_") ? testId.slice("element_".length) : "");
+      })
+      .filter((id, index, all) => id.length > 0 && all.indexOf(id) === index);
   });
   for (const id of ids) {
-    await page.locator(`[data-selectable="${id}"]`).first().scrollIntoViewIfNeeded({ timeout: 2000 }).catch(() => undefined);
+    await page.locator(`[data-selectable="${id}"], [data-testid="element_${id}"]`).first().scrollIntoViewIfNeeded({ timeout: 2000 }).catch(() => undefined);
   }
 }
 
@@ -703,7 +722,8 @@ export async function readModel(page: Page): Promise<PageModel> {
     }
 
     type RawComponent = {
-      id: string;
+      selectable: string;
+      testId: string;
       titles: string[];
       textTileText?: string;
       layoutId: string;
@@ -728,14 +748,26 @@ export async function readModel(page: Page): Promise<PageModel> {
         if (!host) continue;
         const components: RawComponent[] = [];
         for (const child of host.children) {
-          if (!child.hasAttribute("data-element-container")) continue;
-          const id = child.getAttribute("data-selectable") || "";
-          if (!id) continue;
+          const ownTestId = child.getAttribute("data-testid") || "";
+          const nestedTest = child.querySelector("[data-testid^='element_'], [data-testid^='element-']");
+          const testId = ownTestId.startsWith("element_") || ownTestId.startsWith("element-")
+            ? ownTestId
+            : nestedTest?.getAttribute("data-testid") || "";
+          const selectable =
+            child.getAttribute("data-selectable") ||
+            child.querySelector("[data-selectable]")?.getAttribute("data-selectable") ||
+            "";
+          const isTile =
+            child.hasAttribute("data-element-container") ||
+            testId.startsWith("element_") ||
+            testId.startsWith("element-");
+          if (!isTile) continue;
           const titles = titlesOf(child);
           const textTile = !child.querySelector('[role="grid"], table');
           const rect = child.getBoundingClientRect();
           components.push({
-            id,
+            selectable,
+            testId,
             titles,
             textTileText: textTile ? child.textContent || "" : undefined,
             layoutId: layout.getAttribute("data-layout-id") || "",
@@ -761,10 +793,12 @@ export async function readModel(page: Page): Promise<PageModel> {
   for (const group of raw.groups) {
     const components: ComponentInfo[] = [];
     for (const component of group.components) {
+      const id = componentId({ selectable: component.selectable, testId: component.testId });
+      if (!id) continue;
       const label = componentLabel(component.titles, component.textTileText);
       if (!label) continue;
       components.push({
-        id: component.id,
+        id,
         label,
         layoutId: component.layoutId,
         x: component.x,
@@ -847,18 +881,30 @@ export async function readGridArea(page: Page, id: string): Promise<GridArea> {
 }
 
 export async function selectElement(page: Page, id: string, label: string): Promise<void> {
-  const card = page.locator(`[data-testid="element-${id}"]`);
+  let card = page.locator(elementHosts(id)[0]).first();
+  let found = false;
+  for (const selector of elementHosts(id)) {
+    const locator = page.locator(selector);
+    if ((await locator.count()) > 0) {
+      card = locator.first();
+      found = true;
+      break;
+    }
+  }
+  if (!found) fail(`${label}: element-${id} is not on the page`);
   try {
     await card.waitFor({ state: "attached", timeout: 5000 });
     await card.scrollIntoViewIfNeeded({ timeout: 5000 });
   } catch {
     fail(`${label}: element-${id} is not on the page`);
   }
-  const measured = await page.evaluate((elementId) => {
-    const host = document.querySelector(`[data-testid="element-${elementId}"]`);
+  const measured = await page.evaluate((selectors) => {
+    const host = selectors
+      .map((selector) => document.querySelector(selector))
+      .find((node): node is HTMLElement => node instanceof HTMLElement);
     if (!(host instanceof HTMLElement)) return null;
     const ownTitle = [...host.querySelectorAll('[data-testid="dynamic-title"]')].find((node) => {
-      return node.closest('[data-testid^="element-"]') === host;
+      return node.closest('[data-testid^="element-"], [data-testid^="element_"]') === host;
     });
     const hostRect = host.getBoundingClientRect();
     const titleRect = ownTitle?.getBoundingClientRect();
@@ -870,7 +916,7 @@ export async function selectElement(page: Page, id: string, label: string): Prom
       preferred,
       viewport: { width: window.innerWidth, height: window.innerHeight },
     };
-  }, id);
+  }, elementHosts(id));
   if (!measured) fail(`${label}: element-${id} is not on the page`);
   const point = visibleClick(measured.rect, measured.preferred, measured.viewport);
   if (!point) fail(`${label}: element-${id} is outside the viewport`);
