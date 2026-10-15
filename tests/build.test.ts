@@ -13,7 +13,7 @@ import {
   saveInsertAction,
 } from "../dist/effects/build.js";
 
-function buildEditor(pages: string[]): { editor: Editor; calls: string[] } {
+function buildEditor(pages: string[], columns: string[] = []): { editor: Editor; calls: string[] } {
   const calls: string[] = [];
   const editor: Editor = {
     findPage: async (name) => {
@@ -22,7 +22,10 @@ function buildEditor(pages: string[]): { editor: Editor; calls: string[] } {
     },
     findElement: async (title) => {
       calls.push(`findElement:${title}`);
-      if (title === "missing") throw new Error("not on the page");
+      if (title === "missing") throw new Error(`Title ${JSON.stringify(title)} was not found. Nothing was changed.`);
+      if (title === "duplicate") {
+        throw new Error(`Title ${JSON.stringify(title)} matches 2 components. Nothing was changed.`);
+      }
       return { title, inputTable: title === "names" };
     },
     setControl: async () => {},
@@ -38,6 +41,13 @@ function buildEditor(pages: string[]): { editor: Editor; calls: string[] } {
     },
     addInputTable: async (title, column) => {
       calls.push(`addInputTable:${title}:${column}`);
+    },
+    addTypedColumn: async (title, name, type) => {
+      calls.push(`addTypedColumn:${title}:${name}:${type}`);
+    },
+    listColumns: async (title) => {
+      calls.push(`listColumns:${title}`);
+      return [...columns];
     },
     addTextControl: async (title) => {
       calls.push(`addTextControl:${title}`);
@@ -80,10 +90,63 @@ test("addNamedPage stops when the page already exists", async () => {
   assert.deepEqual(calls, ["findPage:test"]);
 });
 
-test("addEmptyInputTable asks for an empty table and its text column", async () => {
+test("a title that matches more than one element does not create a table", async () => {
   const { editor, calls } = buildEditor([]);
-  await addEmptyInputTable(editor, "names", "name");
-  assert.deepEqual(calls, ["addInputTable:names:name"]);
+  await assert.rejects(
+    () => addEmptyInputTable(editor, "duplicate", [{ name: "pk_person", type: "text" }]),
+    /matches 2 components/,
+  );
+  assert.ok(!calls.some((call) => call.startsWith("addInputTable")));
+});
+
+test("a date-first input table is rejected before the table is created", async () => {
+  const { editor, calls } = buildEditor([]);
+  await assert.rejects(
+    () =>
+      addEmptyInputTable(editor, "missing", [
+        { name: "dt_start", type: "date" },
+        { name: "pk_person", type: "text" },
+      ]),
+    /first column must be text/,
+  );
+  assert.ok(!calls.some((call) => call.startsWith("addInputTable")));
+});
+
+test("a title that is not an input table does not gain a column", async () => {
+  const { editor, calls } = buildEditor([]);
+  await assert.rejects(
+    () => addEmptyInputTable(editor, "FCT_SALES", [{ name: "pk_person", type: "text" }]),
+    /not an input table/,
+  );
+  assert.ok(!calls.some((call) => call.startsWith("addTypedColumn")));
+  assert.ok(!calls.some((call) => call.startsWith("addInputTable")));
+  assert.ok(!calls.some((call) => call.startsWith("addSystemColumn")));
+});
+
+test("an existing input table adds only the columns that are missing", async () => {
+  const { editor, calls } = buildEditor([], ["pk_person"]);
+  await addEmptyInputTable(editor, "names", [
+    { name: "pk_person", type: "text" },
+    { name: "dt_start", type: "date" },
+  ]);
+  assert.deepEqual(calls, [
+    "findElement:names",
+    "listColumns:names",
+    "addTypedColumn:names:dt_start:date",
+  ]);
+});
+
+test("a new input table renames the text scaffold then adds later columns", async () => {
+  const { editor, calls } = buildEditor([]);
+  await addEmptyInputTable(editor, "missing", [
+    { name: "pk_person", type: "text" },
+    { name: "dt_start", type: "date" },
+  ]);
+  assert.deepEqual(calls, [
+    "findElement:missing",
+    "addInputTable:missing:pk_person",
+    "addTypedColumn:missing:dt_start:date",
+  ]);
 });
 
 test("addNameControl titles the text input c.<name>", async () => {

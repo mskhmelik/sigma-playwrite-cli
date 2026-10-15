@@ -155,6 +155,9 @@ export function workbookEditor(page: Page): Editor {
     async addSelectColumn(title, column, options) {
       await showSelectColumn(page, title, column, options);
     },
+    async addTypedColumn(title, name, type) {
+      await showTypedColumn(page, title, name, type);
+    },
     async setOnSelectControl(table, clickColumn, control, sourceColumn) {
       await saveColumnSelect(page, table, clickColumn, control, sourceColumn);
     },
@@ -901,6 +904,33 @@ async function showSystemColumn(page: Page, title: string, column: string): Prom
   } catch {
     fail(`Column ${JSON.stringify(column)} was not added to ${JSON.stringify(title)}.`);
   }
+}
+
+async function showTypedColumn(page: Page, title: string, name: string, type: "text" | "date"): Promise<void> {
+  const found = await locateTitle(page, title);
+  const before = await headerLabels(page, found.id);
+  if (before.includes(name)) return;
+  await clickAddColumn(page, found.id);
+  await page.waitForTimeout(300);
+  await pickMenuLabel(page, type === "date" ? "Date" : "Text");
+  try {
+    await page.waitForFunction(
+      (previous) => {
+        const labels = [...document.querySelectorAll('[data-testid^="sheet-column-item-"]')].map((node) =>
+          (node.textContent || "").replace(/Column menu/g, "").replace(/\s+/g, " ").trim(),
+        );
+        return labels.some((label) => label.length > 0 && !previous.includes(label));
+      },
+      before,
+      { timeout: 8000 },
+    );
+  } catch {
+    fail(`Column ${JSON.stringify(name)} was not added to ${JSON.stringify(title)}.`);
+  }
+  const after = await headerLabels(page, found.id);
+  const created = after.find((label) => !before.includes(label));
+  if (!created) fail(`Column ${JSON.stringify(name)} was not added to ${JSON.stringify(title)}.`);
+  if (created !== name) await renameColumnItem(page, created, name);
 }
 
 async function showSelectColumn(page: Page, title: string, column: string, options: string[]): Promise<void> {

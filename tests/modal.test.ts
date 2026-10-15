@@ -43,6 +43,7 @@ function pageEditor(
     stackModalBody: async () => {},
     addContainer: async () => {},
     hasContainer: async () => false,
+    addTypedColumn: async () => {},
   };
   return { editor, calls };
 }
