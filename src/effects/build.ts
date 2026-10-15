@@ -1,6 +1,7 @@
 import type { Editor } from "../editor.js";
 import { groupingLanded, planGrouping } from "../grouping.js";
-import { controlTitle, type HandleKind } from "../handles.js";
+import { containerBorder, cornerRadius } from "../container.js";
+import { controlTitle, containerTitle, type HandleKind } from "../handles.js";
 import { columnTitle } from "../system-columns.js";
 
 export async function addNamedPage(editor: Editor, name: string): Promise<void> {
@@ -28,6 +29,24 @@ export async function addNameControl(editor: Editor, kind: HandleKind, handle: s
 export async function addNamedButton(editor: Editor, title: string): Promise<void> {
   if (!title.trim()) throw new Error("missing title");
   await editor.addButton(title);
+}
+
+export async function addNamedContainer(editor: Editor, handle: string, titles: string[]): Promise<void> {
+  const title = containerTitle(handle);
+  try {
+    await editor.findElement(title);
+    return;
+  } catch {
+    // The container is not on the page yet.
+  }
+  for (const element of titles) {
+    try {
+      await editor.findElement(element);
+    } catch {
+      throw new Error("missing title");
+    }
+  }
+  await editor.addContainer(titles, title, containerBorder, cornerRadius("Pill"));
 }
 
 export async function saveInsertAction(

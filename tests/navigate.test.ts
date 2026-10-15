@@ -33,6 +33,7 @@ function pageEditor(
     ensureModalSentence: async () => "",
     ensureModalButton: async () => "",
     stackModalBody: async () => {},
+    addContainer: async () => {},
   };
   return { editor, calls };
 }

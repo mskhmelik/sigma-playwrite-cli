@@ -54,6 +54,7 @@ function columnEditor(options: {
     ensureModalSentence: async () => "",
     ensureModalButton: async () => "",
     stackModalBody: async () => {},
+    addContainer: async () => {},
     listColumns: async (title) => {
       calls.push(`listColumns:${title}`);
       return [...options.columns];

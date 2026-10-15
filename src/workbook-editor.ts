@@ -3,7 +3,8 @@ import type { Editor } from "./editor.js";
 import { Exit, fail } from "./errors.js";
 import { locateTitle } from "./edit.js";
 import { controlTitle, type HandleKind } from "./handles.js";
-import { confirmSelected, placeArea, readModel } from "./place.js";
+import { createContainerButton, inspectorHeader, selectionClick } from "./container.js";
+import { confirmSelected, elementHosts, placeArea, readModel } from "./place.js";
 import { columnTitle } from "./system-columns.js";
 
 async function pageTabs(page: Page): Promise<{ id: string; name: string; selected: boolean }[]> {
@@ -175,6 +176,9 @@ export function workbookEditor(page: Page): Editor {
     async stackModalBody(sentenceId, sentenceArea, buttonId, buttonArea) {
       await placeArea(page, sentenceId, sentenceArea, () => {}, "sentence");
       await placeArea(page, buttonId, buttonArea, () => {}, "button");
+    },
+    async addContainer(titles, title, border, radius) {
+      await createContainer(page, titles, title, border, radius);
     },
   };
 }
@@ -429,6 +433,70 @@ async function createTextControl(page: Page, title: string): Promise<void> {
   await renameTitle(page, id, title);
   await page.waitForTimeout(600);
   if ((await readCanvasTitle(page, id)) !== title) await renameTitle(page, id, title);
+}
+
+async function createContainer(page: Page, titles: string[], title: string, border: string, radius: string): Promise<void> {
+  for (const [index, elementTitle] of titles.entries()) {
+    const found = await locateTitle(page, elementTitle);
+    const gesture = selectionClick(index);
+    const host = page.locator(elementHosts(found.id).join(", ")).first();
+    await host.scrollIntoViewIfNeeded();
+    await host.click({ modifiers: gesture.modifiers, force: gesture.force });
+    try {
+      await page.locator(`[data-testid="selection-border--${found.id}"]`).waitFor({ state: "attached", timeout: 5000 });
+    } catch {
+      fail(`${elementTitle} was not selected.`);
+    }
+  }
+  const before = new Set(await selectableIds(page));
+  const button = page.locator(`[data-testid="${createContainerButton}"]`);
+  try {
+    await button.click({ timeout: 5000 });
+  } catch {
+    fail("Create container was not found.");
+  }
+  const id = await createdId(page, before);
+  const header = page.locator(`[data-testid="${inspectorHeader}"]`);
+  await header.click();
+  await page.keyboard.press("Meta+A");
+  await page.keyboard.insertText(title);
+  await page.keyboard.press("Enter");
+  try {
+    await header.filter({ hasText: title }).waitFor({ state: "visible", timeout: 5000 });
+  } catch {
+    fail(`Container title is not ${JSON.stringify(title)}.`);
+  }
+  await paintContainer(page, id, border, radius);
+}
+
+async function paintContainer(page: Page, id: string, border: string, radius: string): Promise<void> {
+  const format = page.getByRole("tab", { name: /^format$/i });
+  if ((await format.count()) >= 1) await format.first().click();
+  const style = page.getByRole("button", { name: /^style\b/i });
+  if ((await style.count()) > 0 && (await style.first().getAttribute("aria-expanded")) !== "true") {
+    await style.first().click();
+  }
+  const width = border.match(/^(\d+)px/)?.[1] ?? "";
+  if (!width) fail(`Container border is not a pixel width: ${border}`);
+  const borderField = page.getByRole("spinbutton", { name: /border/i });
+  const borderText = page.getByRole("textbox", { name: /border/i });
+  if ((await borderField.count()) + (await borderText.count()) < 1) fail("Border width was not found.");
+  const field = (await borderField.count()) > 0 ? borderField.first() : borderText.first();
+  await field.fill(width);
+  await field.press("Enter");
+  const pill = page.locator('[aria-label="Pill"]');
+  if ((await pill.count()) < 1) fail("Pill corner was not found.");
+  await pill.first().click();
+  const painted = await page.evaluate(({ elementId, wantedRadius }) => {
+    const host =
+      document.querySelector(`[data-testid="element_${elementId}"]`) ??
+      document.querySelector(`[data-testid="element-${elementId}"]`) ??
+      document.querySelector(`[data-selectable="${elementId}"]`);
+    if (!(host instanceof HTMLElement)) return false;
+    const style = getComputedStyle(host);
+    return style.borderTopWidth === "1px" && style.borderTopStyle === "solid" && style.borderRadius === wantedRadius;
+  }, { elementId: id, wantedRadius: radius });
+  if (!painted) fail("Container style did not land. Expected a 1px solid border and 8px corners.");
 }
 
 async function createButton(page: Page, title: string): Promise<void> {

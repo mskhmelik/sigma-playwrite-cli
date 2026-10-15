@@ -27,6 +27,7 @@ USAGE
   sigma-playwrite-cli add --url <workbook-url> [--page <page-name>] --type control --kind c|v --handle <name>
   sigma-playwrite-cli add --url <workbook-url> [--page <page-name>] --type control --kind c|v --handle <name> --control segmented --option <value> [--option <value>...]
   sigma-playwrite-cli add --url <workbook-url> [--page <page-name>] --type button --title <label>
+  sigma-playwrite-cli add --url <workbook-url> [--page <page-name>] --type container --handle <name> --title <element> [--title <element>...]
   sigma-playwrite-cli add-csv --url <workbook-url> [--page <page-name>] --file <path.csv> --title <table title> --connection <connection name>
   sigma-playwrite-cli rename --url <workbook-url> [--page <page-name>] --title <current title> --name <new title>
   sigma-playwrite-cli set-column --url <workbook-url> [--page <page-name>] --title <table title> --column <column name> [--column <column name>...] --set format=date
@@ -76,6 +77,12 @@ title is written after that field. Page names, button labels, and the name after
 are sentence case. A missing page, handle, kind, or title stops before an edit.
 insert-row, insert-rows, edit-cell, and delete-row refuse an element that is
 not an input table. sequence runs steps in order and stops at the first failure.
+
+add --type container wraps every --title in one container. The inspector title
+is cnt.<handle>. The border is 1px and the corners are Pill. The container is
+not moved or resized. A container that already has that title is left as it is.
+One --title is enough. The first element is clicked, and each later element is
+added with the Meta modifier.
 
 add-page, add-modal, add input-table, add control, add button, and set-action
 build a page. An input table title is BE - <Name> or FE - <Name>. set-action
@@ -173,7 +180,7 @@ if (command === "api") {
     }
     throw error;
   }
-} else if (command === "add" && ["input-table", "control", "button"].includes(flagValue(argv.slice(1), "type") ?? "")) {
+} else if (command === "add" && ["input-table", "control", "button", "container"].includes(flagValue(argv.slice(1), "type") ?? "")) {
   try {
     await runCreate(command, argv.slice(1));
   } catch (error) {

@@ -47,6 +47,7 @@ function modalEditor(findPage: (name: string) => Promise<void>): { editor: Edito
         `stack:${sentenceId}:${sentenceArea.rowStart}-${sentenceArea.rowEnd}:${sentenceArea.colStart}-${sentenceArea.colEnd}:${buttonId}:${buttonArea.rowStart}-${buttonArea.rowEnd}:${buttonArea.colStart}-${buttonArea.colEnd}`,
       );
     },
+    addContainer: async () => {},
   };
   return { editor, calls };
 }
