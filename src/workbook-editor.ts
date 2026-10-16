@@ -930,6 +930,7 @@ async function containerAround(page: Page, ids: string[]): Promise<string | null
 }
 
 async function createContainer(page: Page, titles: string[], title: string, border: string, radius: string): Promise<void> {
+  containerReads.delete(page);
   await returnToPageNode(page, await selectedPageId(page));
   const ids: string[] = [];
   for (const elementTitle of titles) ids.push((await locateTitle(page, elementTitle)).id);
@@ -940,6 +941,7 @@ async function createContainer(page: Page, titles: string[], title: string, bord
     await host.click({ force: true });
     await writeInspectorTitle(page, title);
     await paintContainer(page, existing, border, radius);
+    rememberContainer(page, { title, id: existing, styled: true });
     return;
   }
   for (const [index, elementTitle] of titles.entries()) {
@@ -965,6 +967,7 @@ async function createContainer(page: Page, titles: string[], title: string, bord
   const id = await createdId(page, before);
   await writeInspectorTitle(page, title);
   await paintContainer(page, id, border, radius);
+  rememberContainer(page, { title, id, styled: true });
 }
 
 async function inspectorText(page: Page, label: string): Promise<{ x: number; y: number } | null> {
