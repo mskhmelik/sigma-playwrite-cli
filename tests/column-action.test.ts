@@ -3,6 +3,7 @@ import { test } from "node:test";
 import type { Editor } from "../src/editor.ts";
 import {
   addSegmentedControl,
+  addCalculatedColumn,
   addSelectColumn,
   addSystemColumns,
   saveOnSelectControl,
@@ -41,6 +42,9 @@ function columnEditor(options: {
     },
     addSelectColumn: async (title, column, options) => {
       calls.push(`addSelectColumn:${title}:${column}:${options.join(",")}`);
+    },
+    addCalculation: async (title, column, formula) => {
+      calls.push(`addCalculation:${title}:${column}:${formula}`);
     },
     setUpdateRow: async (button, table, column, valueControl, rowIdControl) => {
       calls.push(`setUpdateRow:${table}:${column}:${valueControl}:${rowIdControl}:${button}`);
@@ -117,6 +121,21 @@ test("saveOnSelectControl does not save when the control is missing", async () =
     /missing handle/,
   );
   assert.ok(!calls.some((call) => call.startsWith("setOnSelectControl")));
+});
+
+const picker =
+  'Text([FCT_PEOPLE.csv/employee_number]) & " - " & [FCT_PEOPLE.csv/employee_first_name] & " " & [FCT_PEOPLE.csv/employee_last_name]';
+
+test("addCalculatedColumn leaves a column that is already visible", async () => {
+  const { editor, calls } = columnEditor({ inputTable: false, columns: ["txt_picker"] });
+  await addCalculatedColumn(editor, "names", "txt_picker", picker);
+  assert.deepEqual(calls, ["findElement:names", "listColumns:names"]);
+});
+
+test("addCalculatedColumn writes a formula on a table that is not an input table", async () => {
+  const { editor, calls } = columnEditor({ inputTable: false, columns: ["employee_number"] });
+  await addCalculatedColumn(editor, "names", "txt_picker", picker);
+  assert.deepEqual(calls, ["findElement:names", "listColumns:names", `addCalculation:names:txt_picker:${picker}`]);
 });
 
 test("addSelectColumn adds a single-select column that is not already visible", async () => {

@@ -158,6 +158,9 @@ export function workbookEditor(page: Page): Editor {
     async addSelectColumn(title, column, options) {
       await showSelectColumn(page, title, column, options);
     },
+    async addCalculation(title, column, formula) {
+      await showCalculation(page, title, column, formula);
+    },
     async addTypedColumn(title, name, type) {
       await showTypedColumn(page, title, name, type);
     },
@@ -1270,6 +1273,80 @@ async function showSelectColumn(page: Page, title: string, column: string, optio
   if (!created) fail(`Single-select column was not added to ${JSON.stringify(title)}.`);
   if (created !== column) await renameColumnItem(page, created, column);
   await addColumnChoices(page, column, options);
+}
+
+async function rightClickHeader(page: Page, id: string, label?: string): Promise<void> {
+  const headers = page.locator(`[data-selectable="${id}"] [role="columnheader"]`);
+  const header = label ? headers.filter({ hasText: label }).last() : headers.last();
+  try {
+    await header.waitFor({ state: "visible", timeout: 5000 });
+  } catch {
+    fail("Column header was not found.");
+  }
+  await header.click({ button: "right" });
+}
+
+async function clickPlainText(page: Page, label: string): Promise<void> {
+  const item = page.getByText(label, { exact: true });
+  try {
+    await item.first().waitFor({ state: "visible", timeout: 5000 });
+  } catch {
+    fail(`${label} was not found.`);
+  }
+  await item.first().click();
+}
+
+async function showCalculation(page: Page, title: string, column: string, formula: string): Promise<void> {
+  const found = await locateTitle(page, title);
+  const before = await headerLabels(page, found.id);
+  if (before.includes(column)) return;
+  await rightClickHeader(page, found.id);
+  await clickPlainText(page, "Add new column");
+  const bar = page.locator(".cm-content").first();
+  try {
+    await bar.waitFor({ state: "visible", timeout: 5000 });
+  } catch {
+    fail("Formula bar was not found.");
+  }
+  await bar.click();
+  await page.keyboard.press("Meta+A");
+  await page.keyboard.insertText(formula);
+  await page.keyboard.press("Enter");
+  try {
+    await page.waitForFunction(
+      (previous) => {
+        const labels = [...document.querySelectorAll('[data-testid^="sheet-column-item-"]')].map((node) =>
+          (node.textContent || "").replace(/Column menu/g, "").replace(/\s+/g, " ").trim(),
+        );
+        return labels.some((label) => label.length > 0 && !previous.includes(label));
+      },
+      before,
+      { timeout: 8000 },
+    );
+  } catch {
+    fail(`Column ${JSON.stringify(column)} was not added to ${JSON.stringify(title)}.`);
+  }
+  const after = await headerLabels(page, found.id);
+  const created = after.find((label) => !before.includes(label));
+  if (!created) fail(`Column ${JSON.stringify(column)} was not added to ${JSON.stringify(title)}.`);
+  if (created === column) return;
+  await rightClickHeader(page, found.id, created);
+  await clickPlainText(page, "Rename column");
+  const field = page.getByRole("textbox", { name: created, exact: true });
+  await field.fill(column);
+  await field.press("Enter");
+  try {
+    await page.waitForFunction(
+      (name) =>
+        [...document.querySelectorAll('[data-testid^="sheet-column-item-"]')].some(
+          (node) => (node.textContent || "").replace(/Column menu/g, "").replace(/\s+/g, " ").trim() === name,
+        ),
+      column,
+      { timeout: 5000 },
+    );
+  } catch {
+    fail(`Column is not ${JSON.stringify(column)}.`);
+  }
 }
 
 async function renameColumnItem(page: Page, current: string, wanted: string): Promise<void> {

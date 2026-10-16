@@ -118,6 +118,19 @@ export async function addSystemColumns(editor: Editor, title: string, columns: s
   }
 }
 
+/** Adds a calculated column when that name is not already a header. Warehouse tables are allowed. */
+export async function addCalculatedColumn(
+  editor: Editor,
+  title: string,
+  column: string,
+  formula: string,
+): Promise<void> {
+  await editor.findElement(title);
+  const present = await editor.listColumns(title);
+  if (present.includes(column)) return;
+  await editor.addCalculation(title, column, formula);
+}
+
 /** Adds a single-select column when that name is not already a header. */
 export async function addSelectColumn(
   editor: Editor,

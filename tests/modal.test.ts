@@ -44,6 +44,7 @@ function pageEditor(
     addContainer: async () => {},
     hasContainer: async () => false,
     addTypedColumn: async () => {},
+    addCalculation: async () => {},
     addDrawer: async () => {},
   };
   return { editor, calls };

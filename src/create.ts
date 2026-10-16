@@ -8,6 +8,7 @@ import {
   addNamedDrawer,
   addNamedModal,
   addSegmentedControl,
+  addCalculatedColumn,
   addSelectColumn,
   addSystemColumns,
   groupIntoExisting,
@@ -87,6 +88,7 @@ export type CreateCommand =
   | { kind: "publish"; url: string; page?: string }
   | { kind: "add-column"; url: string; page?: string; title: string; columns: string[] }
   | { kind: "select-column"; url: string; page?: string; title: string; column: string; options: string[] }
+  | { kind: "calc-column"; url: string; page?: string; title: string; column: string; formula: string }
   | {
       kind: "on-select";
       url: string;
@@ -144,6 +146,19 @@ function requireOnOff(value: string, flag: string): DrawerToggle {
     fail(`add-drawer --${flag} must be on or off, not ${JSON.stringify(value)}`);
   }
   return value;
+}
+
+function requireSigmaFormula(formula: string): string {
+  const text = formula.trim();
+  if (!text) fail("add-column requires --formula");
+  if (/\bCONCAT(?:ENATE)?\s*\(/i.test(text)) {
+    fail(`add-column formula must be a Sigma formula, not ${JSON.stringify(text)}`);
+  }
+  const outside = text.replace(/\[[^\]]*\]/g, " ").replace(/"(?:[^"\\]|\\.)*"/g, " ");
+  if (/(?:^|[^A-Z0-9_])\$?[A-Z]{1,3}\$?[0-9]{1,7}(?![A-Z0-9_(])/.test(outside)) {
+    fail(`add-column formula must be a Sigma formula, not ${JSON.stringify(text)}`);
+  }
+  return text;
 }
 
 function requireBackground(value: string): string {
@@ -271,6 +286,16 @@ export function parseCreate(command: string, args: string[]): CreateCommand {
   }
   if (command === "add-column") {
     const columnType = one(bag, "type");
+    if (columnType === "calculation") {
+      allow(bag, ["url", "page", "title", "column", "type", "formula"]);
+      const title = one(bag, "title");
+      if (!title) fail("add-column requires --title");
+      const column = one(bag, "column");
+      if (!column) fail("add-column requires --column");
+      const formula = one(bag, "formula");
+      if (!formula) fail("add-column requires --formula");
+      return { kind: "calc-column", url, page, title, column, formula: requireSigmaFormula(formula) };
+    }
     if (columnType === "single-select") {
       allow(bag, ["url", "page", "title", "column", "type", "option"]);
       const title = one(bag, "title");
@@ -281,7 +306,9 @@ export function parseCreate(command: string, args: string[]): CreateCommand {
       if (options.length === 0) fail("add-column requires --option");
       return { kind: "select-column", url, page, title, column, options };
     }
-    if (columnType !== undefined) fail(`add-column type must be single-select, not ${JSON.stringify(columnType)}`);
+    if (columnType !== undefined) {
+      fail(`add-column type must be single-select or calculation, not ${JSON.stringify(columnType)}`);
+    }
     allow(bag, ["url", "page", "title", "column"]);
     const title = one(bag, "title");
     if (!title) fail("add-column requires --title");
@@ -404,6 +431,8 @@ export async function applyCreate(editor: Editor, parsed: CreateCommand, mark: (
       await addSystemColumns(editor, parsed.title, parsed.columns);
     } else if (parsed.kind === "select-column") {
       await addSelectColumn(editor, parsed.title, parsed.column, parsed.options);
+    } else if (parsed.kind === "calc-column") {
+      await addCalculatedColumn(editor, parsed.title, parsed.column, parsed.formula);
     } else if (parsed.kind === "update-row") {
       await saveUpdateRow(
         editor,

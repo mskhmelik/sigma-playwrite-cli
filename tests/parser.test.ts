@@ -155,6 +155,92 @@ test("set-action on-select without --from-column is rejected", () => {
   assert.doesNotMatch(result.stderr, /Unknown command/);
 });
 
+const picker =
+  'Text([FCT_PEOPLE.csv/employee_number]) & " - " & [FCT_PEOPLE.csv/employee_first_name] & " " & [FCT_PEOPLE.csv/employee_last_name]';
+
+test("add-column calculation keeps LOG10", () => {
+  const formula = "LOG10([FCT_PEOPLE.csv/employee_number])";
+  const parsed = parseCreate("add-column", [
+    "--url",
+    url,
+    "--title",
+    "Raw - Fact - People",
+    "--column",
+    "txt_picker",
+    "--type",
+    "calculation",
+    "--formula",
+    formula,
+  ]);
+  assert.equal(parsed.kind, "calc-column");
+  if (parsed.kind !== "calc-column") return;
+  assert.equal(parsed.formula, formula);
+});
+
+test("add-column calculation rejects an A1 reference before Chrome", () => {
+  assert.throws(
+    () =>
+      parseCreate("add-column", [
+        "--url",
+        url,
+        "--title",
+        "Raw - Fact - People",
+        "--column",
+        "txt_picker",
+        "--type",
+        "calculation",
+        "--formula",
+        "A1",
+      ]),
+    /Sigma formula/,
+  );
+});
+
+test("add-column calculation rejects CONCAT before Chrome", () => {
+  assert.throws(
+    () =>
+      parseCreate("add-column", [
+        "--url",
+        url,
+        "--title",
+        "Raw - Fact - People",
+        "--column",
+        "txt_picker",
+        "--type",
+        "calculation",
+        "--formula",
+        'CONCAT([FCT_PEOPLE.csv/employee_number], " - ")',
+      ]),
+    /Sigma formula/,
+  );
+});
+
+test("help lists add-column calculation", () => {
+  const result = run(["--help"]);
+  assert.equal(result.status, 0);
+  assert.match(result.stdout, /--type calculation --formula <sigma formula>/);
+});
+
+test("add-column calculation keeps the Sigma formula", () => {
+  const parsed = parseCreate("add-column", [
+    "--url",
+    url,
+    "--title",
+    "Raw - Fact - People",
+    "--column",
+    "txt_picker",
+    "--type",
+    "calculation",
+    "--formula",
+    picker,
+  ]);
+  assert.equal(parsed.kind, "calc-column");
+  if (parsed.kind !== "calc-column") return;
+  assert.equal(parsed.title, "Raw - Fact - People");
+  assert.equal(parsed.column, "txt_picker");
+  assert.equal(parsed.formula, picker);
+});
+
 test("add-column single-select without --option is rejected", () => {
   const result = run([
     "add-column",
