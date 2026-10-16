@@ -840,7 +840,7 @@ async function createContainer(page: Page, titles: string[], title: string, bord
   for (const [index, elementTitle] of titles.entries()) {
     const found = await locateTitle(page, elementTitle);
     const gesture = selectionClick(index);
-    const host = page.locator(`[data-testid="element_${found.id}"]`).first();
+    const host = page.locator(elementHosts(found.id).join(", ")).first();
     await host.scrollIntoViewIfNeeded();
     await host.click({ modifiers: gesture.modifiers, force: gesture.force, position: { x: 12, y: 8 } });
     try {
@@ -850,6 +850,12 @@ async function createContainer(page: Page, titles: string[], title: string, bord
     }
   }
   const before = new Set(await selectableIds(page));
+  await page.evaluate(() => {
+    const canvas = document.querySelector('[data-testid="workbook-canvas"]');
+    if (!(canvas instanceof HTMLElement)) return;
+    canvas.tabIndex = -1;
+    canvas.focus();
+  });
   await page.keyboard.press(groupShortcut);
   const id = await createdId(page, before);
   await writeInspectorTitle(page, title);
