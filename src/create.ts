@@ -155,7 +155,7 @@ function requireSigmaFormula(formula: string): string {
     fail(`add-column formula must be a Sigma formula, not ${JSON.stringify(text)}`);
   }
   const outside = text.replace(/\[[^\]]*\]/g, " ").replace(/"(?:[^"\\]|\\.)*"/g, " ");
-  if (/(?:^|[^A-Z0-9_])\$?[A-Z]{1,3}\$?[0-9]{1,7}(?![A-Z0-9_])/.test(outside)) {
+  if (/(?:^|[^A-Z0-9_])\$?[A-Z]{1,3}\$?[0-9]{1,7}(?![A-Z0-9_(])/.test(outside)) {
     fail(`add-column formula must be a Sigma formula, not ${JSON.stringify(text)}`);
   }
   return text;
@@ -306,7 +306,9 @@ export function parseCreate(command: string, args: string[]): CreateCommand {
       if (options.length === 0) fail("add-column requires --option");
       return { kind: "select-column", url, page, title, column, options };
     }
-    if (columnType !== undefined) fail(`add-column type must be single-select, not ${JSON.stringify(columnType)}`);
+    if (columnType !== undefined) {
+      fail(`add-column type must be single-select or calculation, not ${JSON.stringify(columnType)}`);
+    }
     allow(bag, ["url", "page", "title", "column"]);
     const title = one(bag, "title");
     if (!title) fail("add-column requires --title");

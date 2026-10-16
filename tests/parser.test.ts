@@ -158,6 +158,25 @@ test("set-action on-select without --from-column is rejected", () => {
 const picker =
   'Text([FCT_PEOPLE.csv/employee_number]) & " - " & [FCT_PEOPLE.csv/employee_first_name] & " " & [FCT_PEOPLE.csv/employee_last_name]';
 
+test("add-column calculation keeps LOG10", () => {
+  const formula = "LOG10([FCT_PEOPLE.csv/employee_number])";
+  const parsed = parseCreate("add-column", [
+    "--url",
+    url,
+    "--title",
+    "Raw - Fact - People",
+    "--column",
+    "txt_picker",
+    "--type",
+    "calculation",
+    "--formula",
+    formula,
+  ]);
+  assert.equal(parsed.kind, "calc-column");
+  if (parsed.kind !== "calc-column") return;
+  assert.equal(parsed.formula, formula);
+});
+
 test("add-column calculation rejects an A1 reference before Chrome", () => {
   assert.throws(
     () =>
