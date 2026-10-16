@@ -5,10 +5,11 @@ export function cornerRadius(name: "Pill" | "Square"): string {
   return "8px";
 }
 
-export function selectionClick(index: number): { modifiers: Array<"Meta">; force: boolean } {
+export function selectionClick(index: number): { modifiers: Array<"Shift">; force: boolean } {
   if (index === 0) return { modifiers: [], force: false };
-  return { modifiers: ["Meta"], force: true };
+  return { modifiers: ["Shift"], force: true };
 }
 
-export const createContainerButton = "grid-layout-container-from-selected";
+/** Group the current selection. Works for one element or several. */
+export const groupShortcut = "Meta+G";
 export const inspectorHeader = "inspector-header";

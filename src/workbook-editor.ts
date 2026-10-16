@@ -3,7 +3,7 @@ import type { DrawerSettings, Editor } from "./editor.js";
 import { Exit, fail } from "./errors.js";
 import { locateTitle } from "./edit.js";
 import { controlTitle, type HandleKind } from "./handles.js";
-import { createContainerButton, inspectorHeader, selectionClick } from "./container.js";
+import { groupShortcut, inspectorHeader, selectionClick } from "./container.js";
 import { confirmSelected, elementHosts, placeArea, readModel } from "./place.js";
 import { columnTitle } from "./system-columns.js";
 
@@ -783,13 +783,66 @@ async function containerHeaderIs(page: Page, title: string): Promise<boolean> {
   return false;
 }
 
+async function writeInspectorTitle(page: Page, title: string): Promise<void> {
+  const header = page.locator(`[data-testid="${inspectorHeader}"]`);
+  const point = await page.evaluate((testId) => {
+    const root = document.querySelector(`[data-testid="${testId}"]`);
+    if (!(root instanceof HTMLElement)) return null;
+    const label = [...root.querySelectorAll("div")].find((node) =>
+      [...node.childNodes].some((child) => child.nodeType === Node.TEXT_NODE && (child.textContent || "").trim().length > 0),
+    );
+    if (!(label instanceof HTMLElement)) return null;
+    const rect = label.getBoundingClientRect();
+    return { x: rect.x + Math.min(24, rect.width / 2), y: rect.y + rect.height / 2 };
+  }, inspectorHeader);
+  if (!point) fail("Container title was not found.");
+  await page.mouse.dblclick(point.x, point.y);
+  const input = header.locator("input");
+  try {
+    await input.waitFor({ state: "visible", timeout: 5000 });
+  } catch {
+    fail("Container title was not found.");
+  }
+  await input.fill(title);
+  await input.press("Enter");
+  try {
+    await header.filter({ hasText: title }).waitFor({ state: "visible", timeout: 5000 });
+  } catch {
+    fail(`Container title is not ${JSON.stringify(title)}.`);
+  }
+}
+
+async function containerAround(page: Page, ids: string[]): Promise<string | null> {
+  return page.evaluate((elementIds) => {
+    const parents = elementIds.map((id) => {
+      const el = document.querySelector(`[data-testid="element_${id}"]`);
+      const parent = el?.parentElement?.closest('[data-testid^="element_"]');
+      return (parent?.getAttribute("data-testid") || "").replace(/^element_/, "");
+    });
+    if (parents.some((id) => id.length === 0)) return null;
+    if (new Set(parents).size !== 1) return null;
+    return parents[0];
+  }, ids);
+}
+
 async function createContainer(page: Page, titles: string[], title: string, border: string, radius: string): Promise<void> {
+  const ids: string[] = [];
+  for (const elementTitle of titles) ids.push((await locateTitle(page, elementTitle)).id);
+  const existing = await containerAround(page, ids);
+  if (existing) {
+    const host = page.locator(elementHosts(existing).join(", ")).first();
+    await host.scrollIntoViewIfNeeded();
+    await host.click({ force: true });
+    await writeInspectorTitle(page, title);
+    await paintContainer(page, existing, border, radius);
+    return;
+  }
   for (const [index, elementTitle] of titles.entries()) {
     const found = await locateTitle(page, elementTitle);
     const gesture = selectionClick(index);
-    const host = page.locator(elementHosts(found.id).join(", ")).first();
+    const host = page.locator(`[data-testid="element_${found.id}"]`).first();
     await host.scrollIntoViewIfNeeded();
-    await host.click({ modifiers: gesture.modifiers, force: gesture.force });
+    await host.click({ modifiers: gesture.modifiers, force: gesture.force, position: { x: 12, y: 8 } });
     try {
       await page.locator(`[data-testid="selection-border--${found.id}"]`).waitFor({ state: "attached", timeout: 5000 });
     } catch {
@@ -797,23 +850,9 @@ async function createContainer(page: Page, titles: string[], title: string, bord
     }
   }
   const before = new Set(await selectableIds(page));
-  const button = page.locator(`[data-testid="${createContainerButton}"]`);
-  try {
-    await button.click({ timeout: 5000 });
-  } catch {
-    fail("Create container was not found.");
-  }
+  await page.keyboard.press(groupShortcut);
   const id = await createdId(page, before);
-  const header = page.locator(`[data-testid="${inspectorHeader}"]`);
-  await header.click();
-  await page.keyboard.press("Meta+A");
-  await page.keyboard.insertText(title);
-  await page.keyboard.press("Enter");
-  try {
-    await header.filter({ hasText: title }).waitFor({ state: "visible", timeout: 5000 });
-  } catch {
-    fail(`Container title is not ${JSON.stringify(title)}.`);
-  }
+  await writeInspectorTitle(page, title);
   await paintContainer(page, id, border, radius);
 }
 

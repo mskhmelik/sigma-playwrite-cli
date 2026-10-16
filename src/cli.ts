@@ -86,7 +86,7 @@ add --type container wraps every --title in one container. The inspector title
 is cnt.<handle>. The border is 1px and the corners are Pill. The container is
 not moved or resized. A container that already has that title is left as it is.
 One --title is enough. The first element is clicked, and each later element is
-added with the Meta modifier.
+added with Shift. Command+G wraps the selection, including a single element.
 
 add-page, add-modal, add-drawer, add input-table, add control, add button, and set-action
 build a page. add-drawer names the page tab d.<handle>. A setting left out of
