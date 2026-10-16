@@ -830,8 +830,12 @@ async function choosePage(page: Page, requested: string | undefined): Promise<vo
   if (matches.length !== 1) {
     fail(`Page ${JSON.stringify(requested)} was not found. Pages: ${tabs.map((tab) => tab.name).join(", ")}`);
   }
-  if (!matches[0].selected) {
-    await page.locator(`[data-testid="page-item-${matches[0].id}"]`).click();
+  const current = new URL(page.url());
+  const nodeId = current.searchParams.get(":nodeId") || current.searchParams.get("nodeId");
+  if (!matches[0].selected || (nodeId && nodeId !== matches[0].id)) {
+    const next = new URL(toEditUrl(page.url()));
+    next.search = `:${new URLSearchParams({ nodeId: matches[0].id }).toString()}`;
+    await page.goto(next.toString(), { waitUntil: "domcontentloaded" });
     await page.locator(`[data-layout-id="layout-body-${matches[0].id}"]`).waitFor({ state: "visible", timeout: 15000 });
   }
 }

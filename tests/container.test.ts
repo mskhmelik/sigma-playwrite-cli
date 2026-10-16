@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { containerBorder, cornerRadius, selectionClick } from "../dist/container.js";
+import { containerBorder, cornerRadius, groupShortcut, selectionClick } from "../dist/container.js";
 import { addNamedContainer } from "../dist/effects/build.js";
 import type { Editor } from "../src/editor.ts";
 
@@ -10,9 +10,10 @@ test("a new container is a 1px border with Pill corners", () => {
   assert.equal(cornerRadius("Square"), "0px");
 });
 
-test("later elements are added to the selection with Meta and a forced click", () => {
+test("later elements are added to the selection with Shift", () => {
   assert.deepEqual(selectionClick(0), { modifiers: [], force: false });
-  assert.deepEqual(selectionClick(1), { modifiers: ["Meta"], force: true });
+  assert.deepEqual(selectionClick(1), { modifiers: ["Shift"], force: true });
+  assert.equal(groupShortcut, "Meta+G");
 });
 
 function containerEditor(present: string[]): { editor: Editor; calls: string[] } {
