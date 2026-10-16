@@ -1,3 +1,18 @@
+export type DrawerSize = "small" | "medium" | "large";
+export type DrawerToggle = "on" | "off";
+
+/** Passed add-drawer settings. Omitted keys stay as Sigma created them. */
+export type DrawerSettings = {
+  width?: DrawerSize;
+  spacing?: DrawerSize;
+  padding?: DrawerToggle;
+  elementGap?: DrawerToggle;
+  pageOverlay?: DrawerToggle;
+  background?: string;
+  header?: DrawerToggle;
+  closeIcon?: DrawerToggle;
+};
+
 /** Browser seam. Unit tests pass a fake. Only the live run opens Chrome. */
 export type Editor = {
   findPage(name: string): Promise<void>;
@@ -17,6 +32,8 @@ export type Editor = {
   addTextControl(title: string): Promise<void>;
   addButton(title: string): Promise<void>;
   addModal(name: string): Promise<void>;
+  /** Create the drawer page, then apply only the settings that were passed. */
+  addDrawer(name: string, settings: DrawerSettings): Promise<void>;
   setInsertAction(button: string, table: string, column: string, controlTitle: string): Promise<void>;
   setCloseModal(button: string): Promise<void>;
   setIfElse(

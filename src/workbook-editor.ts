@@ -1,5 +1,5 @@
 import type { Locator, Page } from "playwright";
-import type { Editor } from "./editor.js";
+import type { DrawerSettings, Editor } from "./editor.js";
 import { Exit, fail } from "./errors.js";
 import { locateTitle } from "./edit.js";
 import { controlTitle, type HandleKind } from "./handles.js";
@@ -116,6 +116,9 @@ export function workbookEditor(page: Page): Editor {
     },
     async addModal(name) {
       await createModal(page, name);
+    },
+    async addDrawer(name, settings) {
+      await createDrawer(page, name, settings);
     },
     async addInputTable(title, column) {
       await createInputTable(page, title, column);
@@ -336,6 +339,303 @@ async function createModal(page: Page, name: string): Promise<void> {
   } catch {
     fail(`Modal ${JSON.stringify(name)} was not created.`);
   }
+}
+
+async function clickBottomButton(page: Page, name: string): Promise<void> {
+  const buttons = page.getByRole("button", { name, exact: true });
+  const count = await buttons.count();
+  if (count < 1) fail(`Button ${JSON.stringify(name)} was not found.`);
+  const index = await buttons.evaluateAll((nodes) => {
+    let best = -1;
+    let bestBottom = -1;
+    nodes.forEach((node, i) => {
+      const box = node.getBoundingClientRect();
+      if (box.width <= 0 || box.height <= 0) return;
+      if (box.bottom >= bestBottom) {
+        bestBottom = box.bottom;
+        best = i;
+      }
+    });
+    return best;
+  });
+  if (index < 0) fail(`Button ${JSON.stringify(name)} was not found.`);
+  await buttons.nth(index).click();
+}
+
+async function createDrawer(page: Page, name: string, settings: DrawerSettings): Promise<void> {
+  const before = new Set((await pageTabs(page)).map((tab) => tab.id));
+  await clickBottomButton(page, "Layout");
+  const item = page.getByRole("menuitem", { name: "Drawer", exact: true });
+  try {
+    await item.first().waitFor({ state: "visible", timeout: 5000 });
+  } catch {
+    fail("Drawer menu item was not found.");
+  }
+  if ((await item.count()) !== 1) fail("Drawer menu item was not found.");
+  await item.click();
+  await page.waitForTimeout(600);
+  const created = (await pageTabs(page)).filter((tab) => !before.has(tab.id));
+  if (created.length !== 1) fail(`Expected one new drawer, found ${created.length}.`);
+  const id = created[0].id;
+  await page.locator(`[data-testid="page-dropdown-${id}"]`).click();
+  await page.locator('[data-testid="menuitem-rename"]').click();
+  const field = page.locator('input[aria-label^="Rename"]');
+  await field.fill(name);
+  await field.press("Enter");
+  try {
+    await page.waitForFunction(
+      (pageName) => {
+        const input = document.querySelector('input[aria-label^="Rename"]');
+        if (input instanceof HTMLElement && input.getClientRects().length > 0) return false;
+        return [...document.querySelectorAll('[data-testid^="page-item-"]')].some(
+          (el) => (el.textContent || "").trim() === pageName,
+        );
+      },
+      name,
+      { timeout: 5000 },
+    );
+  } catch {
+    fail(`Drawer ${JSON.stringify(name)} was not created.`);
+  }
+  if (!drawerSettingsPassed(settings)) return;
+  await page.locator(`[data-testid="page-item-${id}"]`).click();
+  await page.locator(`[data-layout-id="layout-body-${id}"]`).waitFor({ state: "visible", timeout: 15000 });
+  await applyDrawerSettings(page, settings);
+}
+
+function drawerSettingsPassed(settings: DrawerSettings): boolean {
+  return (
+    settings.width !== undefined ||
+    settings.spacing !== undefined ||
+    settings.padding !== undefined ||
+    settings.elementGap !== undefined ||
+    settings.pageOverlay !== undefined ||
+    settings.background !== undefined ||
+    settings.header !== undefined ||
+    settings.closeIcon !== undefined
+  );
+}
+
+async function formatPanel(page: Page): Promise<Locator> {
+  const named = page.getByRole("tabpanel", { name: /^format$/i });
+  if ((await named.count()) >= 1) return named.first();
+  const panel = page.getByRole("tabpanel");
+  if ((await panel.count()) < 1) fail("Format tab was not found.");
+  return panel.first();
+}
+
+async function expandCollapsedSection(panel: Locator, name: string): Promise<void> {
+  const index = await panel.evaluate((root, sectionName) => {
+    const buttons = [...root.querySelectorAll("button")];
+    const labelOf = (button: Element) =>
+      ((button.getAttribute("aria-label") || button.textContent || "").replace(/\s+/g, " ").trim());
+    const named = buttons.findIndex((button) => labelOf(button) === sectionName);
+    const labels = [...root.querySelectorAll("*")].filter((el) => {
+      const own = [...el.childNodes]
+        .filter((node) => node.nodeType === Node.TEXT_NODE)
+        .map((node) => node.textContent || "")
+        .join("")
+        .replace(/\s+/g, " ")
+        .trim();
+      return own === sectionName;
+    });
+    for (const label of labels) {
+      const scope = label.parentElement;
+      const chevron = scope?.querySelector("button[data-collapsed]");
+      if (chevron instanceof HTMLButtonElement) {
+        const at = buttons.indexOf(chevron);
+        if (at >= 0) return at;
+      }
+    }
+    return named;
+  }, name);
+  if (index < 0) return;
+  const button = panel.locator("button").nth(index);
+  const collapsed = await button.getAttribute("data-collapsed");
+  const expanded = await button.getAttribute("aria-expanded");
+  if (collapsed === "true" || expanded === "false") await button.click();
+}
+
+function sizeWord(value: string): string {
+  if (value === "small") return "Small";
+  if (value === "medium") return "Medium";
+  return "Large";
+}
+
+async function chooseWord(page: Page, panel: Locator, name: RegExp, value: string, label: string): Promise<void> {
+  const word = sizeWord(value);
+  const button = panel.getByRole("button", { name });
+  const combo = panel.getByRole("combobox", { name });
+  const control = (await button.count()) === 1 ? button : (await combo.count()) === 1 ? combo : null;
+  if (!control) fail(`${label} control was not found.`);
+  const tag = await control.evaluate((el) => el.tagName.toLowerCase());
+  if (tag === "select") {
+    const current = await control.inputValue();
+    if (current === value || current === word) return;
+    await control.selectOption(word);
+    return;
+  }
+  try {
+    await control.first().waitFor({ state: "visible", timeout: 5000 });
+  } catch {
+    fail(`${label} control was not found.`);
+  }
+  const current = ((await control.innerText()) || "").replace(/\s+/g, " ").trim();
+  if (new RegExp(`\\b${word}\\b`).test(current)) return;
+  await control.click();
+  const option = page.getByRole("option", { name: word, exact: true });
+  const appeared = await option
+    .first()
+    .waitFor({ state: "visible", timeout: 1500 })
+    .then(() => true)
+    .catch(() => false);
+  if (appeared) await option.first().click();
+  else if (!(await selectNearby(control, word))) fail(`Option ${word} was not found.`);
+  try {
+    await control.filter({ hasText: new RegExp(`\\b${word}\\b`) }).waitFor({ state: "visible", timeout: 3000 });
+  } catch {
+    const after = ((await control.innerText()) || "").replace(/\s+/g, " ").trim();
+    fail(`${label} is ${JSON.stringify(after)}, wanted ${word}.`);
+  }
+}
+
+async function selectNearby(button: Locator, word: string): Promise<boolean> {
+  const handle = await button.evaluateHandle((node, wanted) => {
+    if (!(node instanceof HTMLElement)) return null;
+    let current: HTMLElement | null = node;
+    for (let depth = 0; depth < 8 && current; depth++) {
+      const selects = [...current.querySelectorAll("select")].filter((select) =>
+        [...select.options].some((option) => option.text.trim() === wanted),
+      );
+      if (selects.length === 1) return selects[0];
+      current = current.parentElement;
+    }
+    return null;
+  }, word);
+  const element = handle.asElement();
+  if (!element) {
+    await handle.dispose();
+    return false;
+  }
+  const index = await element.evaluate((select, wanted) => {
+    if (!(select instanceof HTMLSelectElement)) return -1;
+    return [...select.options].findIndex((option) => option.text.trim() === wanted);
+  }, word);
+  if (index < 0) {
+    await element.dispose();
+    return false;
+  }
+  await element.selectOption({ index });
+  await element.dispose();
+  return true;
+}
+
+async function setChecked(panel: Locator, name: RegExp, wantOn: boolean, label: string): Promise<void> {
+  const box = panel.getByRole("checkbox", { name });
+  const sw = panel.getByRole("switch", { name });
+  const control = (await box.count()) === 1 ? box : (await sw.count()) === 1 ? sw : null;
+  if (!control) fail(`${label} checkbox was not found.`);
+  const checked = async () =>
+    (await control.isChecked()) || (await control.getAttribute("aria-checked")) === "true";
+  if ((await checked()) === wantOn) return;
+  await control.click();
+  if ((await checked()) !== wantOn) fail(`${label} did not turn ${wantOn ? "on" : "off"}.`);
+}
+
+function normalizeHex(value: string): string {
+  const raw = value.trim().toLowerCase();
+  const long = raw.match(/^#([0-9a-f]{6})$/);
+  if (long?.[1]) return `#${long[1]}`;
+  const short = raw.match(/^#([0-9a-f]{3})$/);
+  if (short?.[1]) {
+    const [r, g, b] = short[1].split("");
+    return `#${r}${r}${g}${g}${b}${b}`;
+  }
+  const rgb = raw.match(/^rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/);
+  if (!rgb?.[1] || !rgb[2] || !rgb[3]) return "";
+  const parts = [rgb[1], rgb[2], rgb[3]].map((part) => Number(part).toString(16).padStart(2, "0"));
+  return `#${parts.join("")}`;
+}
+
+async function paintOf(button: Locator): Promise<string> {
+  const raw = await button.evaluate((node) => {
+    if (!(node instanceof HTMLElement)) return "";
+    return node.style.getPropertyValue("--selected-color");
+  });
+  return normalizeHex(raw);
+}
+
+async function fillHexField(page: Page, color: string): Promise<boolean> {
+  const inputs = page.locator("input, textarea");
+  const match = await inputs.evaluateAll((nodes) => {
+    const hits: { index: number; value: string }[] = [];
+    nodes.forEach((node, index) => {
+      if (!(node instanceof HTMLInputElement || node instanceof HTMLTextAreaElement)) return;
+      const rect = node.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) return;
+      const label = `${node.getAttribute("aria-label") || ""} ${node.getAttribute("placeholder") || ""}`.toLowerCase();
+      const value = node.value.trim();
+      const hexValue = /^#?[0-9a-fA-F]{3,8}$/.test(value);
+      const hexLabel = /\bhex\b/.test(label) || label.includes("#");
+      if (!hexValue && !hexLabel) return;
+      hits.push({ index, value });
+    });
+    return hits;
+  });
+  if (match.length !== 1) return false;
+  const hit = match[0];
+  if (!hit) return false;
+  const next = hit.value.startsWith("#") || hit.value === "" ? color : color.slice(1);
+  const field = inputs.nth(hit.index);
+  await field.fill(next);
+  await field.press("Enter");
+  return true;
+}
+
+async function setBackground(page: Page, panel: Locator, color: string): Promise<void> {
+  const button = panel.getByRole("button", { name: "Background color", exact: true });
+  try {
+    await button.first().waitFor({ state: "visible", timeout: 5000 });
+  } catch {
+    fail(`Background color ${color} was not found.`);
+  }
+  if ((await button.count()) !== 1) fail(`Background color ${color} was not found.`);
+  if ((await paintOf(button)) === color.toLowerCase()) return;
+  await button.click();
+  if (!(await fillHexField(page, color))) fail(`Background color ${color} has no hex field.`);
+  const wanted = color.toLowerCase();
+  let seen = "";
+  const deadline = Date.now() + 3000;
+  while (Date.now() < deadline) {
+    seen = await paintOf(button);
+    if (seen === wanted) return;
+    await page.waitForTimeout(100);
+  }
+  fail(`Background color ${color} is ${JSON.stringify(seen)}.`);
+}
+
+async function applyDrawerSettings(page: Page, settings: DrawerSettings): Promise<void> {
+  const tab = page.getByRole("tab", { name: /^format$/i });
+  if ((await tab.count()) < 1) fail("Format tab was not found.");
+  await tab.first().click();
+  const panel = await formatPanel(page);
+  const style =
+    settings.width !== undefined ||
+    settings.spacing !== undefined ||
+    settings.padding !== undefined ||
+    settings.elementGap !== undefined ||
+    settings.pageOverlay !== undefined ||
+    settings.background !== undefined;
+  if (style) await expandCollapsedSection(panel, "Drawer style");
+  if (settings.header !== undefined || settings.closeIcon !== undefined) await expandCollapsedSection(panel, "Header");
+  if (settings.width) await chooseWord(page, panel, /Width$/, settings.width, "Width");
+  if (settings.spacing) await chooseWord(page, panel, /Spacing$/, settings.spacing, "Spacing");
+  if (settings.padding) await setChecked(panel, /Padding/, settings.padding === "on", "Padding");
+  if (settings.elementGap) await setChecked(panel, /Element gap/, settings.elementGap === "on", "Element gap");
+  if (settings.pageOverlay) await setChecked(panel, /Page overlay/, settings.pageOverlay === "on", "Page overlay");
+  if (settings.header) await setChecked(panel, /Show title/, settings.header === "on", "Show title");
+  if (settings.closeIcon) await setChecked(panel, /Show close icon/, settings.closeIcon === "on", "Show close icon");
+  if (settings.background) await setBackground(page, panel, settings.background);
 }
 
 async function createInputTable(page: Page, title: string, column: string): Promise<void> {

@@ -5,6 +5,7 @@ import {
   addEmptyInputTable,
   addNameControl,
   addNamedButton,
+  addNamedDrawer,
   addNamedModal,
   addNamedPage,
   duplicateFormula,
@@ -57,6 +58,9 @@ function buildEditor(pages: string[], columns: string[] = []): { editor: Editor;
     },
     addModal: async (name) => {
       calls.push(`addModal:${name}`);
+    },
+    addDrawer: async (name, settings) => {
+      calls.push(`addDrawer:${name}:${JSON.stringify(settings)}`);
     },
     setInsertAction: async (button, table, column, controlTitle) => {
       calls.push(`setInsertAction:${button}:${table}:${column}:${controlTitle}`);
@@ -193,6 +197,18 @@ test("addNamedModal stops when the modal already exists", async () => {
   const { editor, calls } = buildEditor(["Error"]);
   await assert.rejects(() => addNamedModal(editor, "Error"), /duplicate page/);
   assert.deepEqual(calls, ["findPage:Error"]);
+});
+
+test("addNamedDrawer creates a missing drawer named d.employee", async () => {
+  const { editor, calls } = buildEditor(["Data"]);
+  await addNamedDrawer(editor, "d.employee", { header: "on" });
+  assert.deepEqual(calls, ["findPage:d.employee", `addDrawer:d.employee:${JSON.stringify({ header: "on" })}`]);
+});
+
+test("addNamedDrawer stops when d.employee already exists", async () => {
+  const { editor, calls } = buildEditor(["d.employee"]);
+  await assert.rejects(() => addNamedDrawer(editor, "d.employee", { header: "on" }), /duplicate page/);
+  assert.deepEqual(calls, ["findPage:d.employee"]);
 });
 
 test("saveCloseModal saves close on the button", async () => {

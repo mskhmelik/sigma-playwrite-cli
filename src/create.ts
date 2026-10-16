@@ -5,6 +5,7 @@ import {
   addNamedButton,
   addNamedContainer,
   addNamedPage,
+  addNamedDrawer,
   addNamedModal,
   addSegmentedControl,
   addSelectColumn,
@@ -17,9 +18,9 @@ import {
   saveOnSelectControl,
   saveUpdateRow,
 } from "./effects/build.js";
-import type { Editor } from "./editor.js";
+import type { DrawerSettings, DrawerSize, DrawerToggle, Editor } from "./editor.js";
 import { fail } from "./errors.js";
-import { requireControlKind, type HandleKind } from "./handles.js";
+import { drawerTitle, requireControlKind, type HandleKind } from "./handles.js";
 import { markOwned, type OwnedWorkbook } from "./ledger.js";
 import { ensureEditor } from "./place.js";
 import { workbookIdentity } from "./sigma-api.js";
@@ -70,6 +71,7 @@ export type CreateCommand =
       handle: string;
     }
   | { kind: "add-modal"; url: string; page?: string; name: string }
+  | { kind: "add-drawer"; url: string; page?: string; name: string; settings: DrawerSettings }
   | { kind: "close-modal"; url: string; page?: string; title: string }
   | {
       kind: "if-else";
@@ -130,6 +132,27 @@ function one(bag: Bag, name: string): string | undefined {
   return values[0];
 }
 
+function requireDrawerSize(value: string, flag: string): DrawerSize {
+  if (value !== "small" && value !== "medium" && value !== "large") {
+    fail(`add-drawer --${flag} must be small, medium, or large, not ${JSON.stringify(value)}`);
+  }
+  return value;
+}
+
+function requireOnOff(value: string, flag: string): DrawerToggle {
+  if (value !== "on" && value !== "off") {
+    fail(`add-drawer --${flag} must be on or off, not ${JSON.stringify(value)}`);
+  }
+  return value;
+}
+
+function requireBackground(value: string): string {
+  if (!/^#[0-9a-fA-F]{6}$/.test(value)) {
+    fail(`add-drawer --background must be #rrggbb, not ${JSON.stringify(value)}`);
+  }
+  return value;
+}
+
 function allow(bag: Bag, names: string[]): void {
   for (const name of Object.keys(bag)) {
     if (!names.includes(name)) fail(`Unknown argument: --${name}`);
@@ -155,6 +178,42 @@ export function parseCreate(command: string, args: string[]): CreateCommand {
     if (!name) fail("add-modal requires --name");
     requireSentenceCase(name, "add-modal --name");
     return { kind: "add-modal", url, page, name };
+  }
+  if (command === "add-drawer") {
+    allow(bag, [
+      "url",
+      "page",
+      "handle",
+      "width",
+      "spacing",
+      "padding",
+      "element-gap",
+      "page-overlay",
+      "background",
+      "header",
+      "close-icon",
+    ]);
+    const handle = one(bag, "handle");
+    if (!handle) fail("add-drawer requires --handle");
+    const name = drawerTitle(handle);
+    const settings: DrawerSettings = {};
+    const width = one(bag, "width");
+    if (width !== undefined) settings.width = requireDrawerSize(width, "width");
+    const spacing = one(bag, "spacing");
+    if (spacing !== undefined) settings.spacing = requireDrawerSize(spacing, "spacing");
+    const padding = one(bag, "padding");
+    if (padding !== undefined) settings.padding = requireOnOff(padding, "padding");
+    const elementGap = one(bag, "element-gap");
+    if (elementGap !== undefined) settings.elementGap = requireOnOff(elementGap, "element-gap");
+    const pageOverlay = one(bag, "page-overlay");
+    if (pageOverlay !== undefined) settings.pageOverlay = requireOnOff(pageOverlay, "page-overlay");
+    const background = one(bag, "background");
+    if (background !== undefined) settings.background = requireBackground(background);
+    const header = one(bag, "header");
+    if (header !== undefined) settings.header = requireOnOff(header, "header");
+    const closeIcon = one(bag, "close-icon");
+    if (closeIcon !== undefined) settings.closeIcon = requireOnOff(closeIcon, "close-icon");
+    return { kind: "add-drawer", url, page, name, settings };
   }
   if (command === "add") {
     const type = one(bag, "type");
@@ -318,6 +377,7 @@ export async function applyCreate(editor: Editor, parsed: CreateCommand, mark: (
   try {
     if (parsed.kind === "add-page") await addNamedPage(editor, parsed.name);
     else if (parsed.kind === "add-modal") await addNamedModal(editor, parsed.name);
+    else if (parsed.kind === "add-drawer") await addNamedDrawer(editor, parsed.name, parsed.settings);
     else if (parsed.kind === "input-table") await addEmptyInputTable(editor, parsed.title, parsed.columns);
     else if (parsed.kind === "control") await addNameControl(editor, parsed.controlKind, parsed.handle);
     else if (parsed.kind === "segmented") {
