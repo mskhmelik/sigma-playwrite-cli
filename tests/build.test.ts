@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { Editor } from "../src/editor.ts";
 import {
+  addDateControl,
   addEmptyInputTable,
+  addListControl,
   addNameControl,
   addNamedButton,
   addNamedDrawer,
@@ -14,7 +16,7 @@ import {
   saveInsertAction,
 } from "../dist/effects/build.js";
 
-function buildEditor(pages: string[], columns: string[] = []): { editor: Editor; calls: string[] } {
+function buildEditor(pages: string[], columns: string[] = [], absent: string[] = []): { editor: Editor; calls: string[] } {
   const calls: string[] = [];
   const editor: Editor = {
     findPage: async (name) => {
@@ -23,8 +25,10 @@ function buildEditor(pages: string[], columns: string[] = []): { editor: Editor;
     },
     findElement: async (title) => {
       calls.push(`findElement:${title}`);
-      if (title === "missing") throw new Error(`Title ${JSON.stringify(title)} was not found. Nothing was changed.`);
-      if (title === "duplicate") {
+      if (title === "missing" || absent.includes(title)) {
+        throw new Error(`Title ${JSON.stringify(title)} was not found. Nothing was changed.`);
+      }
+      if (title === "duplicate" || title === "c.duplicate") {
         throw new Error(`Title ${JSON.stringify(title)} matches 2 components. Nothing was changed.`);
       }
       return { title, inputTable: title === "names" };
@@ -49,6 +53,12 @@ function buildEditor(pages: string[], columns: string[] = []): { editor: Editor;
     listColumns: async (title) => {
       calls.push(`listColumns:${title}`);
       return [...columns];
+    },
+    addDateControl: async (title) => {
+      calls.push(`addDateControl:${title}`);
+    },
+    addListControl: async (title, source, column, multiple, nullOption, clear, search) => {
+      calls.push(`addListControl:${title}:${source}:${column}:${multiple}:${nullOption}:${clear}:${search}`);
     },
     addTextControl: async (title) => {
       calls.push(`addTextControl:${title}`);
@@ -152,6 +162,43 @@ test("a new input table renames the text scaffold then adds later columns", asyn
     "addInputTable:missing:pk_person",
     "addTypedColumn:missing:dt_start:date",
   ]);
+});
+
+test("addListControl adds c.role when it is missing", async () => {
+  const { editor, calls } = buildEditor([], [], ["c.role"]);
+  await addListControl(
+    editor,
+    "c",
+    "role",
+    "Raw - Dim - Employee role",
+    "employee_role_code",
+    "off",
+    "off",
+    "on",
+    "off",
+  );
+  assert.deepEqual(calls, [
+    "findElement:c.role",
+    "addListControl:c.role:Raw - Dim - Employee role:employee_role_code:off:off:on:off",
+  ]);
+});
+
+test("addDateControl leaves an existing date control", async () => {
+  const { editor, calls } = buildEditor([]);
+  await addDateControl(editor, "v", "start_date");
+  assert.deepEqual(calls, ["findElement:v.start_date"]);
+});
+
+test("addDateControl does not add when the title matches two components", async () => {
+  const { editor, calls } = buildEditor([]);
+  await assert.rejects(() => addDateControl(editor, "c", "duplicate"), /matches 2 components/);
+  assert.deepEqual(calls, ["findElement:c.duplicate"]);
+});
+
+test("addDateControl adds v.start_date when it is missing", async () => {
+  const { editor, calls } = buildEditor([], [], ["v.start_date"]);
+  await addDateControl(editor, "v", "start_date");
+  assert.deepEqual(calls, ["findElement:v.start_date", "addDateControl:v.start_date"]);
 });
 
 test("addNameControl titles the text input c.<name>", async () => {

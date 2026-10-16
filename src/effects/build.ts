@@ -145,6 +145,40 @@ export async function addSelectColumn(
   await editor.addSelectColumn(title, column, options);
 }
 
+async function addWhenMissing(editor: Editor, title: string, add: () => Promise<void>): Promise<void> {
+  try {
+    await editor.findElement(title);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "";
+    if (!message.includes("was not found")) throw error;
+    await add();
+  }
+}
+
+/** Adds a date control when that canvas title is not already on the page. */
+export async function addDateControl(editor: Editor, kind: HandleKind, handle: string): Promise<void> {
+  const title = controlTitle(kind, handle);
+  await addWhenMissing(editor, title, () => editor.addDateControl(title));
+}
+
+/** Adds a list control when that canvas title is not already on the page. */
+export async function addListControl(
+  editor: Editor,
+  kind: HandleKind,
+  handle: string,
+  source: string,
+  column: string,
+  multiple: "on" | "off",
+  nullOption: "on" | "off",
+  clear: "on" | "off",
+  search: "on" | "off",
+): Promise<void> {
+  const title = controlTitle(kind, handle);
+  await addWhenMissing(editor, title, () =>
+    editor.addListControl(title, source, column, multiple, nullOption, clear, search),
+  );
+}
+
 /** Adds a segmented control when that canvas title is not already on the page. */
 export async function addSegmentedControl(
   editor: Editor,

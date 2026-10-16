@@ -258,6 +258,102 @@ test("add-column single-select without --option is rejected", () => {
   assert.doesNotMatch(result.stderr, /Unknown command/);
 });
 
+test("add control list without --source is rejected", () => {
+  assert.throws(
+    () =>
+      parseCreate("add", [
+        "--url",
+        url,
+        "--type",
+        "control",
+        "--kind",
+        "c",
+        "--handle",
+        "role",
+        "--control",
+        "list",
+        "--column",
+        "employee_role_code",
+      ]),
+    /add control list requires --source/,
+  );
+});
+
+test("add control list keeps an overridden tick", () => {
+  const parsed = parseCreate("add", [
+    "--url",
+    url,
+    "--type",
+    "control",
+    "--kind",
+    "c",
+    "--handle",
+    "role",
+    "--control",
+    "list",
+    "--source",
+    "Raw - Dim - Employee role",
+    "--column",
+    "employee_role_code",
+    "--multiple",
+    "on",
+    "--search",
+    "on",
+  ]);
+  assert.equal(parsed.kind, "list-control");
+  if (parsed.kind !== "list-control") return;
+  assert.equal(parsed.multiple, "on");
+  assert.equal(parsed.nullOption, "off");
+  assert.equal(parsed.clear, "on");
+  assert.equal(parsed.search, "on");
+});
+
+test("add control list defaults the ticks and keeps the source", () => {
+  const parsed = parseCreate("add", [
+    "--url",
+    url,
+    "--type",
+    "control",
+    "--kind",
+    "c",
+    "--handle",
+    "role",
+    "--control",
+    "list",
+    "--source",
+    "Raw - Dim - Employee role",
+    "--column",
+    "employee_role_code",
+  ]);
+  assert.equal(parsed.kind, "list-control");
+  if (parsed.kind !== "list-control") return;
+  assert.equal(parsed.source, "Raw - Dim - Employee role");
+  assert.equal(parsed.column, "employee_role_code");
+  assert.equal(parsed.multiple, "off");
+  assert.equal(parsed.nullOption, "off");
+  assert.equal(parsed.clear, "on");
+  assert.equal(parsed.search, "off");
+});
+
+test("add control date keeps the handle", () => {
+  const parsed = parseCreate("add", [
+    "--url",
+    url,
+    "--type",
+    "control",
+    "--kind",
+    "v",
+    "--handle",
+    "start_date",
+    "--control",
+    "date",
+  ]);
+  assert.equal(parsed.kind, "date-control");
+  if (parsed.kind !== "date-control") return;
+  assert.equal(parsed.controlKind, "v");
+  assert.equal(parsed.handle, "start_date");
+});
+
 test("add segmented control without --option is rejected", () => {
   const result = run([
     "add",

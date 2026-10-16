@@ -62,6 +62,8 @@ function recordingEditor(
     async stackModalBody() {},
     async addCalculation() {},
     async addDrawer() {},
+    async addDateControl() {},
+    async addListControl() {},
   };
 }
 

@@ -73,6 +73,21 @@ export type Editor = {
   addCalculation(title: string, column: string, formula: string): Promise<void>;
   /** Add a segmented control titled `title` with these values, in order. */
   addSegmentedControl(title: string, options: string[]): Promise<void>;
+  /** Add a date control. The caller skips a canvas title that is already on the page. */
+  addDateControl(title: string): Promise<void>;
+  /**
+   * Add a list control sourced from one table column.
+   * Ticks are on or off. The caller skips a canvas title that is already on the page.
+   */
+  addListControl(
+    title: string,
+    source: string,
+    column: string,
+    multiple: DrawerToggle,
+    nullOption: DrawerToggle,
+    clear: DrawerToggle,
+    search: DrawerToggle,
+  ): Promise<void>;
   /**
    * On click, update one row in `table`.
    * The row id comes from `rowIdControl`. `column` is set from `valueControl`.
