@@ -25,7 +25,7 @@ USAGE
   sigma-playwrite-cli add-modal --url <workbook-url> [--page <page-name>] --name <page>
   sigma-playwrite-cli add-drawer --url <workbook-url> [--page <page-name>] --handle <name> [--width small|medium|large] [--spacing small|medium|large] [--padding on|off] [--element-gap on|off] [--page-overlay on|off] [--background <#rrggbb>] [--header on|off] [--close-icon on|off]
   sigma-playwrite-cli add --url <workbook-url> [--page <page-name>] --type input-table --title <element> --column <name>[:text|date] [--column <name>[:text|date]...]
-  sigma-playwrite-cli add --url <workbook-url> [--page <page-name>] --type control --kind c|v --handle <name>
+  sigma-playwrite-cli add --url <workbook-url> [--page <page-name>] --type control --kind c|v --handle <name> [--area <rowStart-rowEnd:colStart-colEnd>]
   sigma-playwrite-cli add --url <workbook-url> [--page <page-name>] --type control --kind c|v --handle <name> --control date
   sigma-playwrite-cli add --url <workbook-url> [--page <page-name>] --type control --kind c|v --handle <name> --control list --source <table> --column <column> [--multiple on|off] [--null-option on|off] [--clear on|off] [--search on|off]
   sigma-playwrite-cli add --url <workbook-url> [--page <page-name>] --type control --kind c|v --handle <name> --control segmented --option <value> [--option <value>...]
@@ -111,7 +111,10 @@ already visible is left as it is. add-column --type single-select adds one
 column and its --option values. add-column --type calculation adds one column
 and commits a Sigma formula. A column reference is [Table/column]. Join text
 with &. Text() turns a number into text. CONCAT and an A1 cell reference are
-rejected. add control --control date adds a date control. add control --control
+rejected. add control --area places that new text control on an exclusive grid
+span. A drawer is 12 columns wide: full width is 1-13, and the halves are 1-7
+and 7-13. A control there is 3 rows tall, so the first row is 1-4:1-7. The move
+does not drag a row edge through another element. add control --control date adds a date control. add control --control
 list reads one source column and does not type option strings. Its ticks default
 to multiple off, null option off, clear on, and search off. Show All option is
 left alone. add control --control segmented uses the same

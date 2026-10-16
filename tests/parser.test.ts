@@ -335,6 +335,44 @@ test("add control list defaults the ticks and keeps the source", () => {
   assert.equal(parsed.search, "off");
 });
 
+test("add control area keeps the exclusive span", () => {
+  const parsed = parseCreate("add", [
+    "--url",
+    url,
+    "--type",
+    "control",
+    "--kind",
+    "c",
+    "--handle",
+    "employee_login",
+    "--area",
+    "1-4:1-7",
+  ]);
+  assert.equal(parsed.kind, "control");
+  if (parsed.kind !== "control") return;
+  assert.equal(parsed.handle, "employee_login");
+  assert.deepEqual(parsed.area, { rowStart: 1, colStart: 1, rowEnd: 4, colEnd: 7 });
+});
+
+test("add control rejects an area whose start is not before its end", () => {
+  assert.throws(
+    () =>
+      parseCreate("add", [
+        "--url",
+        url,
+        "--type",
+        "control",
+        "--kind",
+        "c",
+        "--handle",
+        "employee_login",
+        "--area",
+        "4-1:1-7",
+      ]),
+    /Span start must be less than end/,
+  );
+});
+
 test("add control date keeps the handle", () => {
   const parsed = parseCreate("add", [
     "--url",

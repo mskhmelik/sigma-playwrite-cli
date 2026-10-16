@@ -60,8 +60,9 @@ function buildEditor(pages: string[], columns: string[] = [], absent: string[] =
     addListControl: async (title, source, column, multiple, nullOption, clear, search) => {
       calls.push(`addListControl:${title}:${source}:${column}:${multiple}:${nullOption}:${clear}:${search}`);
     },
-    addTextControl: async (title) => {
-      calls.push(`addTextControl:${title}`);
+    addTextControl: async (title, area) => {
+      const span = area ? `:${area.rowStart}-${area.rowEnd}:${area.colStart}-${area.colEnd}` : "";
+      calls.push(`addTextControl:${title}${span}`);
     },
     addButton: async (title) => {
       calls.push(`addButton:${title}`);
@@ -199,6 +200,17 @@ test("addDateControl adds v.start_date when it is missing", async () => {
   const { editor, calls } = buildEditor([], [], ["v.start_date"]);
   await addDateControl(editor, "v", "start_date");
   assert.deepEqual(calls, ["findElement:v.start_date", "addDateControl:v.start_date"]);
+});
+
+test("addNameControl places c.employee_login on the given span", async () => {
+  const { editor, calls } = buildEditor([]);
+  await addNameControl(editor, "c", "employee_login", {
+    rowStart: 1,
+    colStart: 1,
+    rowEnd: 4,
+    colEnd: 7,
+  });
+  assert.deepEqual(calls, ["addTextControl:c.employee_login:1-4:1-7"]);
 });
 
 test("addNameControl titles the text input c.<name>", async () => {

@@ -123,8 +123,9 @@ export function workbookEditor(page: Page): Editor {
     async addInputTable(title, column) {
       await createInputTable(page, title, column);
     },
-    async addTextControl(title) {
-      await createTextControl(page, title);
+    async addTextControl(title, area) {
+      const id = await createTextControl(page, title);
+      if (area) await placeArea(page, id, area, () => {}, title);
     },
     async addSegmentedControl(title, options) {
       await createSegmentedControl(page, title, options);
@@ -736,7 +737,7 @@ async function readCanvasTitle(page: Page, id: string): Promise<string> {
   return ((await node.innerText().catch(() => "")) || "").trim();
 }
 
-async function createTextControl(page: Page, title: string): Promise<void> {
+async function createTextControl(page: Page, title: string): Promise<string> {
   const before = new Set(await selectableIds(page));
   await clickExactButton(page, "Controls");
   await page.waitForTimeout(300);
@@ -748,6 +749,7 @@ async function createTextControl(page: Page, title: string): Promise<void> {
   await renameTitle(page, id, title);
   await page.waitForTimeout(600);
   if ((await readCanvasTitle(page, id)) !== title) await renameTitle(page, id, title);
+  return id;
 }
 
 async function containerHeaderIs(page: Page, title: string): Promise<boolean> {
