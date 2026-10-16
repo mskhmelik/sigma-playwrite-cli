@@ -47,6 +47,7 @@ function columnEditor(options: {
     },
     addButton: async () => {},
     addModal: async () => {},
+    addDrawer: async () => {},
     setInsertAction: async () => {},
     setCloseModal: async () => {},
     setIfElse: async () => {},

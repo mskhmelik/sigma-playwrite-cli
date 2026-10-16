@@ -327,6 +327,47 @@ test("a repeated input-table column name is rejected", () => {
   );
 });
 
+test("add-drawer handle employee is the page title d.employee", () => {
+  const parsed = parseCreate("add-drawer", ["--url", url, "--handle", "employee", "--header", "on"]);
+  assert.equal(parsed.kind, "add-drawer");
+  if (parsed.kind !== "add-drawer") return;
+  assert.equal(parsed.name, "d.employee");
+  assert.equal(parsed.settings.header, "on");
+  assert.equal(parsed.settings.width, undefined);
+});
+
+test("add-drawer rejects a width before Chrome", () => {
+  const result = run(["add-drawer", "--url", url, "--handle", "employee", "--width", "tiny"]);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /add-drawer --width must be small, medium, or large/);
+  assert.doesNotMatch(result.stderr, /Unknown command/);
+  assert.doesNotMatch(result.stderr, /Chrome is not listening/);
+});
+
+test("add-drawer rejects an empty handle", () => {
+  assert.throws(() => parseCreate("add-drawer", ["--url", url, "--handle", " "]), /empty handle/);
+});
+
+test("add-drawer rejects a duplicate flag and an unknown flag", () => {
+  assert.throws(
+    () => parseCreate("add-drawer", ["--url", url, "--handle", "employee", "--width", "small", "--width", "large"]),
+    /Duplicate --width/,
+  );
+  assert.throws(
+    () => parseCreate("add-drawer", ["--url", url, "--handle", "employee", "--reset", "on"]),
+    /Unknown argument: --reset/,
+  );
+});
+
+test("help lists add-drawer and its settings", () => {
+  const result = run(["--help"]);
+  assert.equal(result.status, 0);
+  assert.match(
+    result.stdout,
+    /add-drawer --url <workbook-url> \[--page <page-name>\] --handle <name> \[--width small\|medium\|large\] \[--spacing small\|medium\|large\] \[--padding on\|off\] \[--element-gap on\|off\] \[--page-overlay on\|off\] \[--background <#rrggbb>\] \[--header on\|off\] \[--close-icon on\|off\]/,
+  );
+});
+
 test("an input-table column type other than text or date is rejected", () => {
   assert.throws(
     () =>

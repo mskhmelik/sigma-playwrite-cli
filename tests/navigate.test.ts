@@ -36,6 +36,7 @@ function pageEditor(
     addContainer: async () => {},
     hasContainer: async () => false,
     addTypedColumn: async () => {},
+    addDrawer: async () => {},
   };
   return { editor, calls };
 }

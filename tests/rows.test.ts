@@ -60,6 +60,7 @@ function recordingEditor(
       return "";
     },
     async stackModalBody() {},
+    async addDrawer() {},
   };
 }
 

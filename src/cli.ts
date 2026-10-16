@@ -23,6 +23,7 @@ USAGE
   sigma-playwrite-cli add --url <workbook-url> [--page <page-name>] --type text [--title <title>]
   sigma-playwrite-cli add-page --url <workbook-url> [--page <page-name>] --name <page>
   sigma-playwrite-cli add-modal --url <workbook-url> [--page <page-name>] --name <page>
+  sigma-playwrite-cli add-drawer --url <workbook-url> [--page <page-name>] --handle <name> [--width small|medium|large] [--spacing small|medium|large] [--padding on|off] [--element-gap on|off] [--page-overlay on|off] [--background <#rrggbb>] [--header on|off] [--close-icon on|off]
   sigma-playwrite-cli add --url <workbook-url> [--page <page-name>] --type input-table --title <element> --column <name>[:text|date] [--column <name>[:text|date]...]
   sigma-playwrite-cli add --url <workbook-url> [--page <page-name>] --type control --kind c|v --handle <name>
   sigma-playwrite-cli add --url <workbook-url> [--page <page-name>] --type control --kind c|v --handle <name> --control segmented --option <value> [--option <value>...]
@@ -84,8 +85,9 @@ not moved or resized. A container that already has that title is left as it is.
 One --title is enough. The first element is clicked, and each later element is
 added with the Meta modifier.
 
-add-page, add-modal, add input-table, add control, add button, and set-action
-build a page. An input table title is BE - <Name> or FE - <Name>. Repeat --column
+add-page, add-modal, add-drawer, add input-table, add control, add button, and set-action
+build a page. add-drawer names the page tab d.<handle>. A setting left out of
+add-drawer stays as Sigma created it. An input table title is BE - <Name> or FE - <Name>. Repeat --column
 as name, name:text, or name:date, in the order the columns should appear. A bare
 name is text. The first column of a new table is text. set-action
 insert-row saves Insert row on a button, taking one column from c.<name> or
@@ -172,7 +174,7 @@ if (command === "api") {
     }
     throw error;
   }
-} else if (command === "add-page" || command === "add-modal" || command === "add-column" || command === "group-column" || command === "set-action" || command === "publish") {
+} else if (command === "add-page" || command === "add-modal" || command === "add-drawer" || command === "add-column" || command === "group-column" || command === "set-action" || command === "publish") {
   try {
     await runCreate(command, argv.slice(1));
   } catch (error) {

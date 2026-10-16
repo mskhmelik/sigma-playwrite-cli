@@ -1,4 +1,4 @@
-import type { Editor } from "../editor.js";
+import type { DrawerSettings, Editor } from "../editor.js";
 import { groupingLanded, planGrouping } from "../grouping.js";
 import { containerBorder, cornerRadius } from "../container.js";
 import { controlTitle, containerTitle, type HandleKind } from "../handles.js";
@@ -222,6 +222,18 @@ export async function addNamedModal(editor: Editor, name: string): Promise<void>
     await editor.findPage(page);
   } catch {
     await editor.addModal(page);
+    return;
+  }
+  throw new Error("duplicate page");
+}
+
+export async function addNamedDrawer(editor: Editor, name: string, settings: DrawerSettings): Promise<void> {
+  const page = name.trim();
+  if (!page) throw new Error("missing page");
+  try {
+    await editor.findPage(page);
+  } catch {
+    await editor.addDrawer(page, settings);
     return;
   }
   throw new Error("duplicate page");

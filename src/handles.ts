@@ -15,6 +15,13 @@ export function containerTitle(handle: string): string {
   return `cnt.${name}`;
 }
 
+/** Page-tab title for a drawer. Not sentence case. */
+export function drawerTitle(handle: string): string {
+  const name = handle.trim();
+  if (!name) fail("empty handle");
+  return `d.${name}`;
+}
+
 export function requireControlKind(value: string | undefined, command: string): HandleKind {
   if (value !== "c" && value !== "v") fail(`${command} requires --kind c or --kind v`);
   return value;

@@ -28,6 +28,7 @@ function modalEditor(findPage: (name: string) => Promise<void>): { editor: Edito
     addTextControl: async () => {},
     addButton: async () => {},
     addModal: async () => {},
+    addDrawer: async () => {},
     setInsertAction: async () => {},
     setCloseModal: async () => {},
     setIfElse: async () => {},
