@@ -1,4 +1,5 @@
 import { pathSegmentFromUrl, withChrome } from "./chrome.js";
+import { parseArea, type GridArea } from "./place.js";
 import {
   addEmptyInputTable,
   addDateControl,
@@ -59,7 +60,7 @@ function inputColumns(values: string[]): InputColumn[] {
 export type CreateCommand =
   | { kind: "add-page"; url: string; page?: string; name: string }
   | { kind: "input-table"; url: string; page?: string; title: string; columns: InputColumn[] }
-  | { kind: "control"; url: string; page?: string; controlKind: HandleKind; handle: string }
+  | { kind: "control"; url: string; page?: string; controlKind: HandleKind; handle: string; area?: GridArea }
   | { kind: "segmented"; url: string; page?: string; controlKind: HandleKind; handle: string; options: string[] }
   | { kind: "date-control"; url: string; page?: string; controlKind: HandleKind; handle: string }
   | {
@@ -314,11 +315,19 @@ export function parseCreate(command: string, args: string[]): CreateCommand {
         return { kind: "segmented", url, page, controlKind, handle, options };
       }
       if (control !== undefined) fail(`add control must be date, list, or segmented, not ${JSON.stringify(control)}`);
-      allow(bag, ["url", "page", "type", "handle", "kind"]);
+      allow(bag, ["url", "page", "type", "handle", "kind", "area"]);
       const handle = one(bag, "handle");
       if (!handle) fail("add control requires --handle");
       const controlKind = requireControlKind(one(bag, "kind"), "add control");
-      return { kind: "control", url, page, controlKind, handle };
+      const areaSpec = one(bag, "area");
+      if (!areaSpec) return { kind: "control", url, page, controlKind, handle };
+      let area: GridArea;
+      try {
+        area = parseArea(areaSpec);
+      } catch (error) {
+        fail(error instanceof Error ? error.message : String(error));
+      }
+      return { kind: "control", url, page, controlKind, handle, area };
     }
     if (type === "button") {
       allow(bag, ["url", "page", "type", "title"]);
@@ -469,7 +478,9 @@ export async function applyCreate(editor: Editor, parsed: CreateCommand, mark: (
     else if (parsed.kind === "add-modal") await addNamedModal(editor, parsed.name);
     else if (parsed.kind === "add-drawer") await addNamedDrawer(editor, parsed.name, parsed.settings);
     else if (parsed.kind === "input-table") await addEmptyInputTable(editor, parsed.title, parsed.columns);
-    else if (parsed.kind === "control") await addNameControl(editor, parsed.controlKind, parsed.handle);
+    else if (parsed.kind === "control") {
+      await addNameControl(editor, parsed.controlKind, parsed.handle, parsed.area);
+    }
     else if (parsed.kind === "date-control") await addDateControl(editor, parsed.controlKind, parsed.handle);
     else if (parsed.kind === "list-control") {
       await addListControl(

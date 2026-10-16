@@ -1,3 +1,5 @@
+import type { GridArea } from "./place.js";
+
 export type DrawerSize = "small" | "medium" | "large";
 export type DrawerToggle = "on" | "off";
 
@@ -29,7 +31,8 @@ export type Editor = {
   addInputTable(title: string, column: string): Promise<void>;
   /** Add one Text or Date column. The caller skips a name that is already a header. */
   addTypedColumn(title: string, name: string, type: "text" | "date"): Promise<void>;
-  addTextControl(title: string): Promise<void>;
+  /** Add a text control. When `area` is set, move it there without crossing another element. */
+  addTextControl(title: string, area?: GridArea): Promise<void>;
   addButton(title: string): Promise<void>;
   addModal(name: string): Promise<void>;
   /** Create the drawer page, then apply only the settings that were passed. */

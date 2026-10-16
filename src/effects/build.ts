@@ -2,6 +2,7 @@ import type { DrawerSettings, Editor } from "../editor.js";
 import { groupingLanded, planGrouping } from "../grouping.js";
 import { containerBorder, cornerRadius } from "../container.js";
 import { controlTitle, containerTitle, type HandleKind } from "../handles.js";
+import type { GridArea } from "../place.js";
 import { columnTitle } from "../system-columns.js";
 
 export async function addNamedPage(editor: Editor, name: string): Promise<void> {
@@ -43,8 +44,22 @@ export async function addEmptyInputTable(
   }
 }
 
-export async function addNameControl(editor: Editor, kind: HandleKind, handle: string): Promise<void> {
-  await editor.addTextControl(controlTitle(kind, handle));
+export async function addNameControl(
+  editor: Editor,
+  kind: HandleKind,
+  handle: string,
+  area?: GridArea,
+): Promise<void> {
+  const title = controlTitle(kind, handle);
+  let present = true;
+  try {
+    await editor.findElement(title);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "";
+    if (!message.includes("was not found")) throw error;
+    present = false;
+  }
+  if (!present || area) await editor.addTextControl(title, area);
 }
 
 export async function addNamedButton(editor: Editor, title: string): Promise<void> {
