@@ -820,7 +820,9 @@ async function containerAround(page: Page, ids: string[]): Promise<string | null
         document.querySelector(`[data-testid="element-${id}"]`);
       const parent = el?.parentElement?.closest('[data-testid^="element_"], [data-testid^="element-"]');
       const testId = parent?.getAttribute("data-testid") || "";
-      return testId.replace(/^element[_-]/, "");
+      const parentId = testId.replace(/^element[_-]/, "");
+      if (!parentId || parentId === id) return "";
+      return parentId;
     });
     if (parents.some((id) => id.length === 0)) return null;
     if (new Set(parents).size !== 1) return null;
