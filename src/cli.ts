@@ -84,7 +84,8 @@ not an input table. sequence runs steps in order and stops at the first failure.
 
 add --type container wraps every --title in one container. The inspector title
 is cnt.<handle>. The border is 1px and the corners are Pill. The container is
-not moved or resized. A container that already has that title is left as it is.
+not moved or resized. A container that already has that title and a 1px solid
+pill frame is left as it is. A titled container without that frame is painted.
 One --title is enough. The first element is clicked, and each later element is
 added with Shift. Command+G wraps the selection, including a single element.
 

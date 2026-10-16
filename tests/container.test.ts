@@ -16,12 +16,19 @@ test("later elements are added to the selection with Shift", () => {
   assert.equal(groupShortcut, "Meta+G");
 });
 
-function containerEditor(present: string[]): { editor: Editor; calls: string[] } {
+function containerEditor(present: string[], styled: string[] = []): { editor: Editor; calls: string[] } {
   const calls: string[] = [];
   const editor = {
     async hasContainer(title: string) {
       calls.push(`hasContainer:${title}`);
       return present.includes(title);
+    },
+    async containerStyled(title: string) {
+      calls.push(`containerStyled:${title}`);
+      return styled.includes(title);
+    },
+    async paintContainer(title: string, border: string, radius: string) {
+      calls.push(`paintContainer:${title}:${border}:${radius}`);
     },
     async findElement(title: string) {
       calls.push(`findElement:${title}`);
@@ -57,7 +64,20 @@ test("a missing element does not create the container", async () => {
 });
 
 test("an existing cnt.<handle> is left as it is", async () => {
+  const { editor, calls } = containerEditor(["cnt.variables_employee", "Employee"], ["cnt.variables_employee"]);
+  await addNamedContainer(editor, "variables_employee", ["Employee"]);
+  assert.deepEqual(calls, [
+    "hasContainer:cnt.variables_employee",
+    "containerStyled:cnt.variables_employee",
+  ]);
+});
+
+test("a titled container without a frame is painted", async () => {
   const { editor, calls } = containerEditor(["cnt.variables_employee", "Employee"]);
   await addNamedContainer(editor, "variables_employee", ["Employee"]);
-  assert.deepEqual(calls, ["hasContainer:cnt.variables_employee"]);
+  assert.deepEqual(calls, [
+    "hasContainer:cnt.variables_employee",
+    "containerStyled:cnt.variables_employee",
+    "paintContainer:cnt.variables_employee:1px solid var(--color-border):8px",
+  ]);
 });
