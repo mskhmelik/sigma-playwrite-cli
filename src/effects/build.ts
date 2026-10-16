@@ -50,7 +50,16 @@ export async function addNameControl(
   handle: string,
   area?: GridArea,
 ): Promise<void> {
-  await editor.addTextControl(controlTitle(kind, handle), area);
+  const title = controlTitle(kind, handle);
+  let present = true;
+  try {
+    await editor.findElement(title);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "";
+    if (!message.includes("was not found")) throw error;
+    present = false;
+  }
+  if (!present || area) await editor.addTextControl(title, area);
 }
 
 export async function addNamedButton(editor: Editor, title: string): Promise<void> {

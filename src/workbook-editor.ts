@@ -124,7 +124,13 @@ export function workbookEditor(page: Page): Editor {
       await createInputTable(page, title, column);
     },
     async addTextControl(title, area) {
-      const id = await createTextControl(page, title);
+      let id: string;
+      try {
+        id = (await locateTitle(page, title)).id;
+      } catch (error) {
+        if (!(error instanceof Exit) || !error.message.includes("was not found")) throw error;
+        id = await createTextControl(page, title);
+      }
       if (area) await placeArea(page, id, area, () => {}, title);
     },
     async addSegmentedControl(title, options) {
