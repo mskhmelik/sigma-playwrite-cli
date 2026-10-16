@@ -425,15 +425,35 @@ async function formatPanel(page: Page): Promise<Locator> {
 }
 
 async function expandCollapsedSection(panel: Locator, name: string): Promise<void> {
-  const section = panel.getByRole("button", { name, exact: true });
-  const count = await section.count();
-  for (let i = 0; i < count; i++) {
-    const button = section.nth(i);
-    const collapsed = await button.getAttribute("data-collapsed");
-    if (collapsed === null || collapsed === "false") continue;
-    await button.click();
-    return;
-  }
+  const index = await panel.evaluate((root, sectionName) => {
+    const buttons = [...root.querySelectorAll("button")];
+    const labelOf = (button: Element) =>
+      ((button.getAttribute("aria-label") || button.textContent || "").replace(/\s+/g, " ").trim());
+    const named = buttons.findIndex((button) => labelOf(button) === sectionName);
+    const labels = [...root.querySelectorAll("*")].filter((el) => {
+      const own = [...el.childNodes]
+        .filter((node) => node.nodeType === Node.TEXT_NODE)
+        .map((node) => node.textContent || "")
+        .join("")
+        .replace(/\s+/g, " ")
+        .trim();
+      return own === sectionName;
+    });
+    for (const label of labels) {
+      const scope = label.parentElement;
+      const chevron = scope?.querySelector("button[data-collapsed]");
+      if (chevron instanceof HTMLButtonElement) {
+        const at = buttons.indexOf(chevron);
+        if (at >= 0) return at;
+      }
+    }
+    return named;
+  }, name);
+  if (index < 0) return;
+  const button = panel.locator("button").nth(index);
+  const collapsed = await button.getAttribute("data-collapsed");
+  const expanded = await button.getAttribute("aria-expanded");
+  if (collapsed === "true" || expanded === "false") await button.click();
 }
 
 function sizeWord(value: string): string {
@@ -445,15 +465,24 @@ function sizeWord(value: string): string {
 async function chooseWord(page: Page, panel: Locator, name: RegExp, value: string, label: string): Promise<void> {
   const word = sizeWord(value);
   const button = panel.getByRole("button", { name });
+  const combo = panel.getByRole("combobox", { name });
+  const control = (await button.count()) === 1 ? button : (await combo.count()) === 1 ? combo : null;
+  if (!control) fail(`${label} control was not found.`);
+  const tag = await control.evaluate((el) => el.tagName.toLowerCase());
+  if (tag === "select") {
+    const current = await control.inputValue();
+    if (current === value || current === word) return;
+    await control.selectOption(word);
+    return;
+  }
   try {
-    await button.first().waitFor({ state: "visible", timeout: 5000 });
+    await control.first().waitFor({ state: "visible", timeout: 5000 });
   } catch {
     fail(`${label} control was not found.`);
   }
-  if ((await button.count()) !== 1) fail(`${label} control was not found.`);
-  const current = ((await button.innerText()) || "").replace(/\s+/g, " ").trim();
+  const current = ((await control.innerText()) || "").replace(/\s+/g, " ").trim();
   if (new RegExp(`\\b${word}\\b`).test(current)) return;
-  await button.click();
+  await control.click();
   const option = page.getByRole("option", { name: word, exact: true });
   const appeared = await option
     .first()
@@ -461,11 +490,11 @@ async function chooseWord(page: Page, panel: Locator, name: RegExp, value: strin
     .then(() => true)
     .catch(() => false);
   if (appeared) await option.first().click();
-  else if (!(await selectNearby(button, word))) fail(`Option ${word} was not found.`);
+  else if (!(await selectNearby(control, word))) fail(`Option ${word} was not found.`);
   try {
-    await button.filter({ hasText: new RegExp(`\\b${word}\\b`) }).waitFor({ state: "visible", timeout: 3000 });
+    await control.filter({ hasText: new RegExp(`\\b${word}\\b`) }).waitFor({ state: "visible", timeout: 3000 });
   } catch {
-    const after = ((await button.innerText()) || "").replace(/\s+/g, " ").trim();
+    const after = ((await control.innerText()) || "").replace(/\s+/g, " ").trim();
     fail(`${label} is ${JSON.stringify(after)}, wanted ${word}.`);
   }
 }
@@ -503,15 +532,14 @@ async function selectNearby(button: Locator, word: string): Promise<boolean> {
 
 async function setChecked(panel: Locator, name: RegExp, wantOn: boolean, label: string): Promise<void> {
   const box = panel.getByRole("checkbox", { name });
-  try {
-    await box.first().waitFor({ state: "visible", timeout: 5000 });
-  } catch {
-    fail(`${label} checkbox was not found.`);
-  }
-  if ((await box.count()) !== 1) fail(`${label} checkbox was not found.`);
-  if ((await box.isChecked()) === wantOn) return;
-  await box.click();
-  if ((await box.isChecked()) !== wantOn) fail(`${label} did not turn ${wantOn ? "on" : "off"}.`);
+  const sw = panel.getByRole("switch", { name });
+  const control = (await box.count()) === 1 ? box : (await sw.count()) === 1 ? sw : null;
+  if (!control) fail(`${label} checkbox was not found.`);
+  const checked = async () =>
+    (await control.isChecked()) || (await control.getAttribute("aria-checked")) === "true";
+  if ((await checked()) === wantOn) return;
+  await control.click();
+  if ((await checked()) !== wantOn) fail(`${label} did not turn ${wantOn ? "on" : "off"}.`);
 }
 
 function normalizeHex(value: string): string {
