@@ -69,6 +69,8 @@ export type Editor = {
   setOnSelectControl(table: string, clickColumn: string, controlTitle: string, sourceColumn: string): Promise<void>;
   /** Add a single-select column and its choices. The caller skips a column that is already visible. */
   addSelectColumn(title: string, column: string, options: string[]): Promise<void>;
+  /** Add one calculated column and commit its Sigma formula. The caller skips a name that is already a header. */
+  addCalculation(title: string, column: string, formula: string): Promise<void>;
   /** Add a segmented control titled `title` with these values, in order. */
   addSegmentedControl(title: string, options: string[]): Promise<void>;
   /**

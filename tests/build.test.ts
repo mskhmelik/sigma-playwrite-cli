@@ -59,6 +59,7 @@ function buildEditor(pages: string[], columns: string[] = []): { editor: Editor;
     addModal: async (name) => {
       calls.push(`addModal:${name}`);
     },
+    addCalculation: async () => {},
     addDrawer: async (name, settings) => {
       calls.push(`addDrawer:${name}:${JSON.stringify(settings)}`);
     },

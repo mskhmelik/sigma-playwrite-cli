@@ -35,6 +35,7 @@ USAGE
   sigma-playwrite-cli group-column --url <workbook-url> [--page <page-name>] --title <element> --column <column> --with <column already in the grouping>
   sigma-playwrite-cli add-column --url <workbook-url> [--page <page-name>] --title <element> --column <system column> [--column <system column>...]
   sigma-playwrite-cli add-column --url <workbook-url> [--page <page-name>] --title <element> --column <column> --type single-select --option <value> [--option <value>...]
+  sigma-playwrite-cli add-column --url <workbook-url> [--page <page-name>] --title <element> --column <column> --type calculation --formula <sigma formula>
   sigma-playwrite-cli set-action --url <workbook-url> [--page <page-name>] --title <button> --effect insert-row --into <table> --column <column> --kind c|v --from-handle <name>
   sigma-playwrite-cli set-action --url <workbook-url> [--page <page-name>] --title <button> --effect close-modal
   sigma-playwrite-cli set-action --url <workbook-url> [--page <page-name>] --title <button> --effect if-else --into <table> --column <column> --kind c|v --from-handle <name> --modal <page>
@@ -105,7 +106,10 @@ have to be an input table.
 add-column shows a system column on an input table. The labels are Row ID,
 Last updated at, Last updated by, Created at, and Created by. A column that is
 already visible is left as it is. add-column --type single-select adds one
-column and its --option values. add control --control segmented uses the same
+column and its --option values. add-column --type calculation adds one column
+and commits a Sigma formula. A column reference is [Table/column]. Join text
+with &. Text() turns a number into text. CONCAT and an A1 cell reference are
+rejected. add control --control segmented uses the same
 values. set-action update-row writes --from-handle into --column on the one row
 whose id is --match-handle. The new value is a c.<name> control the user
 sets, named for the column it writes: c.status into status, c.name into name.
