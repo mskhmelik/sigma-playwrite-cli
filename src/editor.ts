@@ -105,6 +105,10 @@ export type Editor = {
   ): Promise<void>;
   /** True when a container's inspector header is this title. Canvas titles do not count. */
   hasContainer(title: string): Promise<boolean>;
+  /** True when that container's inner frame is a 1px solid border with 8px corners. */
+  containerStyled(title: string): Promise<boolean>;
+  /** Paint the border and corners on a container that already has this title. */
+  paintContainer(title: string, border: string, radius: string): Promise<void>;
   /** Wrap the named elements. Title is cnt.<handle>. Border and radius are the painted style. */
   addContainer(titles: string[], title: string, border: string, radius: string): Promise<void>;
 };

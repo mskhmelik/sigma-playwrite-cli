@@ -69,7 +69,15 @@ export async function addNamedButton(editor: Editor, title: string): Promise<voi
 
 export async function addNamedContainer(editor: Editor, handle: string, titles: string[]): Promise<void> {
   const title = containerTitle(handle);
-  if (await editor.hasContainer(title)) return;
+  if (await editor.hasContainer(title)) {
+    if (await editor.containerStyled(title)) {
+      console.log(`${title} already has its frame`);
+      return;
+    }
+    await editor.paintContainer(title, containerBorder, cornerRadius("Pill"));
+    console.log(`${title} frame painted`);
+    return;
+  }
   for (const element of titles) {
     try {
       await editor.findElement(element);
