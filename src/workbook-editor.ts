@@ -1500,6 +1500,12 @@ async function chooseNamedValue(page: Page, label: string, value: string): Promi
     fail(`${label} did not offer ${JSON.stringify(value)}.`);
   }
   await option.first().click();
+  try {
+    await control.filter({ hasText: value }).waitFor({ state: "visible", timeout: 3000 });
+  } catch {
+    const after = ((await control.innerText()) || "").replace(/\s+/g, " ").trim();
+    fail(`${label} is ${JSON.stringify(after)}, wanted ${JSON.stringify(value)}.`);
+  }
 }
 
 async function setPhiCheck(page: Page, label: string, wantOn: boolean): Promise<void> {
