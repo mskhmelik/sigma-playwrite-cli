@@ -834,7 +834,11 @@ async function containerFramed(page: Page, id: string, radius: string): Promise<
       document.querySelector(`[data-testid="element-${elementId}"]`) ??
       document.querySelector(`[data-selectable="${elementId}"]`);
     if (!(host instanceof HTMLElement)) return false;
+    const selectable = host.matches("[data-selectable]") ? host : host.querySelector("[data-selectable]");
+    const containerId = selectable?.getAttribute("data-selectable") || elementId;
     return [...host.querySelectorAll("div")].some((el) => {
+      const owner = el.closest("[data-selectable]");
+      if (!(owner instanceof HTMLElement) || owner.getAttribute("data-selectable") !== containerId) return false;
       const style = getComputedStyle(el);
       return style.borderTopWidth === "1px" && style.borderTopStyle === "solid" && style.borderRadius === wantedRadius;
     });
