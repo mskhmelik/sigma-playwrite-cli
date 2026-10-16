@@ -40,6 +40,8 @@ function columnEditor(options: {
     addSegmentedControl: async (title, options) => {
       calls.push(`addSegmentedControl:${title}:${options.join(",")}`);
     },
+    addDateControl: async () => {},
+    addListControl: async () => {},
     addSelectColumn: async (title, column, options) => {
       calls.push(`addSelectColumn:${title}:${column}:${options.join(",")}`);
     },

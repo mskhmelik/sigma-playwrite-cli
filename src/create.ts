@@ -1,6 +1,8 @@
 import { pathSegmentFromUrl, withChrome } from "./chrome.js";
 import {
   addEmptyInputTable,
+  addDateControl,
+  addListControl,
   addNameControl,
   addNamedButton,
   addNamedContainer,
@@ -59,6 +61,20 @@ export type CreateCommand =
   | { kind: "input-table"; url: string; page?: string; title: string; columns: InputColumn[] }
   | { kind: "control"; url: string; page?: string; controlKind: HandleKind; handle: string }
   | { kind: "segmented"; url: string; page?: string; controlKind: HandleKind; handle: string; options: string[] }
+  | { kind: "date-control"; url: string; page?: string; controlKind: HandleKind; handle: string }
+  | {
+      kind: "list-control";
+      url: string;
+      page?: string;
+      controlKind: HandleKind;
+      handle: string;
+      source: string;
+      column: string;
+      multiple: DrawerToggle;
+      nullOption: DrawerToggle;
+      clear: DrawerToggle;
+      search: DrawerToggle;
+    }
   | { kind: "button"; url: string; page?: string; title: string }
   | { kind: "container"; url: string; page?: string; handle: string; titles: string[] }
   | {
@@ -141,9 +157,9 @@ function requireDrawerSize(value: string, flag: string): DrawerSize {
   return value;
 }
 
-function requireOnOff(value: string, flag: string): DrawerToggle {
+function requireOnOff(value: string, flag: string, command = "add-drawer"): DrawerToggle {
   if (value !== "on" && value !== "off") {
-    fail(`add-drawer --${flag} must be on or off, not ${JSON.stringify(value)}`);
+    fail(`${command} --${flag} must be on or off, not ${JSON.stringify(value)}`);
   }
   return value;
 }
@@ -241,6 +257,53 @@ export function parseCreate(command: string, args: string[]): CreateCommand {
     }
     if (type === "control") {
       const control = one(bag, "control");
+      if (control === "list") {
+        allow(bag, [
+          "url",
+          "page",
+          "type",
+          "handle",
+          "kind",
+          "control",
+          "source",
+          "column",
+          "multiple",
+          "null-option",
+          "clear",
+          "search",
+        ]);
+        const handle = one(bag, "handle");
+        if (!handle) fail("add control requires --handle");
+        const controlKind = requireControlKind(one(bag, "kind"), "add control");
+        const source = one(bag, "source");
+        if (!source) fail("add control list requires --source");
+        const column = one(bag, "column");
+        if (!column) fail("add control list requires --column");
+        const multiple = one(bag, "multiple");
+        const nullOption = one(bag, "null-option");
+        const clear = one(bag, "clear");
+        const search = one(bag, "search");
+        return {
+          kind: "list-control",
+          url,
+          page,
+          controlKind,
+          handle,
+          source,
+          column,
+          multiple: multiple === undefined ? "off" : requireOnOff(multiple, "multiple", "add control"),
+          nullOption: nullOption === undefined ? "off" : requireOnOff(nullOption, "null-option", "add control"),
+          clear: clear === undefined ? "on" : requireOnOff(clear, "clear", "add control"),
+          search: search === undefined ? "off" : requireOnOff(search, "search", "add control"),
+        };
+      }
+      if (control === "date") {
+        allow(bag, ["url", "page", "type", "handle", "kind", "control"]);
+        const handle = one(bag, "handle");
+        if (!handle) fail("add control requires --handle");
+        const controlKind = requireControlKind(one(bag, "kind"), "add control");
+        return { kind: "date-control", url, page, controlKind, handle };
+      }
       if (control === "segmented") {
         allow(bag, ["url", "page", "type", "handle", "kind", "control", "option"]);
         const handle = one(bag, "handle");
@@ -250,7 +313,7 @@ export function parseCreate(command: string, args: string[]): CreateCommand {
         if (options.length === 0) fail("add control requires --option");
         return { kind: "segmented", url, page, controlKind, handle, options };
       }
-      if (control !== undefined) fail(`add control must be segmented, not ${JSON.stringify(control)}`);
+      if (control !== undefined) fail(`add control must be date, list, or segmented, not ${JSON.stringify(control)}`);
       allow(bag, ["url", "page", "type", "handle", "kind"]);
       const handle = one(bag, "handle");
       if (!handle) fail("add control requires --handle");
@@ -407,6 +470,20 @@ export async function applyCreate(editor: Editor, parsed: CreateCommand, mark: (
     else if (parsed.kind === "add-drawer") await addNamedDrawer(editor, parsed.name, parsed.settings);
     else if (parsed.kind === "input-table") await addEmptyInputTable(editor, parsed.title, parsed.columns);
     else if (parsed.kind === "control") await addNameControl(editor, parsed.controlKind, parsed.handle);
+    else if (parsed.kind === "date-control") await addDateControl(editor, parsed.controlKind, parsed.handle);
+    else if (parsed.kind === "list-control") {
+      await addListControl(
+        editor,
+        parsed.controlKind,
+        parsed.handle,
+        parsed.source,
+        parsed.column,
+        parsed.multiple,
+        parsed.nullOption,
+        parsed.clear,
+        parsed.search,
+      );
+    }
     else if (parsed.kind === "segmented") {
       await addSegmentedControl(editor, parsed.controlKind, parsed.handle, parsed.options);
     }

@@ -129,6 +129,12 @@ export function workbookEditor(page: Page): Editor {
     async addSegmentedControl(title, options) {
       await createSegmentedControl(page, title, options);
     },
+    async addDateControl(title) {
+      await createDateControl(page, title);
+    },
+    async addListControl(title, source, column, multiple, nullOption, clear, search) {
+      await createListControl(page, title, source, column, multiple, nullOption, clear, search);
+    },
     async addButton(title) {
       await createButton(page, title);
     },
@@ -1410,6 +1416,164 @@ async function fillChoiceDialog(page: Page, dialog: Locator, column: string, opt
   const done = dialog.getByRole("button", { name: /save|create|done|add/i });
   if ((await done.count()) > 0) await done.first().click();
   else await page.keyboard.press("Enter");
+}
+
+async function clickControlTile(page: Page, label: string): Promise<void> {
+  const point = await page.evaluate((wanted) => {
+    const tiles = [...document.querySelectorAll("div, button")].filter((node) => {
+      if (!(node instanceof HTMLElement)) return false;
+      const text = (node.textContent || "").replace(/\s+/g, " ").trim();
+      if (text !== wanted) return false;
+      const rect = node.getBoundingClientRect();
+      return rect.width >= 48 && rect.width <= 96 && rect.height >= 56 && rect.height <= 96;
+    });
+    const tile = tiles[0];
+    if (!(tile instanceof HTMLElement)) return null;
+    const rect = tile.getBoundingClientRect();
+    return { x: Math.round(rect.x + rect.width / 2), y: Math.round(rect.y + rect.height / 2) };
+  }, label);
+  if (!point) fail(`Control tile ${JSON.stringify(label)} was not found.`);
+  await page.mouse.click(point.x, point.y);
+}
+
+async function nameControl(page: Page, id: string, title: string): Promise<void> {
+  const host = page.locator(`[data-testid="element_${id}"]`).first();
+  try {
+    await host.click({ force: true, timeout: 5000 });
+  } catch {
+    fail(`Control ${id} was not found.`);
+  }
+  const properties = page.getByRole("tab", { name: "Properties", exact: true });
+  if ((await properties.count()) < 1) fail("Properties tab was not found.");
+  await properties.first().click();
+  const field = page.locator('input[placeholder="control-id"]');
+  try {
+    await field.first().waitFor({ state: "visible", timeout: 5000 });
+  } catch {
+    fail(`Control ${id} has no control id field.`);
+  }
+  await field.first().fill(title);
+  await field.first().press("Enter");
+  const writeTitle = async () => {
+    const editable = page.locator(`[data-testid="element_${id}"] [data-testid="dynamic-title"] [contenteditable="true"]`).first();
+    const titleNode = page.locator(`[data-testid="element_${id}"] [data-testid="dynamic-title"]`).first();
+    const target = (await editable.count()) > 0 ? editable : titleNode;
+    await target.click({ force: true });
+    await page.keyboard.press("Meta+A");
+    await page.keyboard.insertText(title);
+    await page.keyboard.press("Enter");
+  };
+  await writeTitle();
+  await page.waitForTimeout(600);
+  const shown = await page.evaluate((elementId) => {
+    const node = document.querySelector(`[data-testid="element_${elementId}"] [data-testid="dynamic-title"]`);
+    return (node?.textContent || "").trim();
+  }, id);
+  if (shown !== title) await writeTitle();
+  try {
+    await page.waitForFunction(
+      ({ elementId, wanted }) => {
+        const node = document.querySelector(`[data-testid="element_${elementId}"] [data-testid="dynamic-title"]`);
+        return (node?.textContent || "").trim() === wanted;
+      },
+      { elementId: id, wanted: title },
+      { timeout: 5000 },
+    );
+  } catch {
+    fail(`Title is not ${JSON.stringify(title)}.`);
+  }
+}
+
+async function chooseNamedValue(page: Page, label: string, value: string): Promise<void> {
+  const pattern = new RegExp(label, "i");
+  const box = page.getByRole("combobox", { name: pattern });
+  const button = page.getByRole("button", { name: pattern });
+  const control = (await box.count()) > 0 ? box.first() : (await button.count()) > 0 ? button.first() : null;
+  if (!control) fail(`${label} was not found.`);
+  const current = ((await control.innerText()) || "").replace(/\s+/g, " ").trim();
+  if (current === value) return;
+  await control.click();
+  const option = page.getByRole("option", { name: value, exact: true });
+  try {
+    await option.first().waitFor({ state: "visible", timeout: 5000 });
+  } catch {
+    fail(`${label} did not offer ${JSON.stringify(value)}.`);
+  }
+  await option.first().click();
+}
+
+async function setPhiCheck(page: Page, label: string, wantOn: boolean): Promise<void> {
+  const box = await page.evaluateHandle((wanted) => {
+    const labels = [...document.querySelectorAll("[data-phi-label='true']")].filter((node) => {
+      return (node.textContent || "").replace(/\s+/g, " ").trim() === wanted;
+    });
+    const marked = labels.find((node) => node instanceof HTMLElement && node.id.length > 0);
+    if (!(marked instanceof HTMLElement)) return null;
+    const owner = [...document.querySelectorAll("[aria-labelledby]")].find((node) =>
+      (node.getAttribute("aria-labelledby") || "").split(/\s+/).includes(marked.id),
+    );
+    const input = owner?.querySelector("input[type='checkbox']");
+    return input instanceof HTMLInputElement ? input : null;
+  }, label);
+  const element = box.asElement();
+  if (!element) {
+    await box.dispose();
+    fail(`${label} checkbox was not found.`);
+  }
+  const checked = await element.evaluate((node) => node instanceof HTMLInputElement && node.checked);
+  if (checked === wantOn) {
+    await element.dispose();
+    return;
+  }
+  await element.click();
+  const after = await element.evaluate((node) => node instanceof HTMLInputElement && node.checked);
+  await element.dispose();
+  if (after !== wantOn) fail(`${label} did not turn ${wantOn ? "on" : "off"}.`);
+}
+
+async function createDateControl(page: Page, title: string): Promise<void> {
+  try {
+    await locateTitle(page, title);
+    return;
+  } catch (error) {
+    if (!(error instanceof Exit) || !error.message.includes("was not found")) throw error;
+  }
+  const before = new Set(await selectableIds(page));
+  await clickExactButton(page, "Controls");
+  await page.waitForTimeout(300);
+  await clickControlTile(page, "Date");
+  const id = await createdId(page, before);
+  await nameControl(page, id, title);
+}
+
+async function createListControl(
+  page: Page,
+  title: string,
+  source: string,
+  column: string,
+  multiple: "on" | "off",
+  nullOption: "on" | "off",
+  clear: "on" | "off",
+  search: "on" | "off",
+): Promise<void> {
+  try {
+    await locateTitle(page, title);
+    return;
+  } catch (error) {
+    if (!(error instanceof Exit) || !error.message.includes("was not found")) throw error;
+  }
+  const before = new Set(await selectableIds(page));
+  await clickExactButton(page, "Controls");
+  await page.waitForTimeout(300);
+  await clickControlTile(page, "List values");
+  const id = await createdId(page, before);
+  await nameControl(page, id, title);
+  await chooseNamedValue(page, "Value source", source);
+  await chooseNamedValue(page, "Source column", column);
+  await setPhiCheck(page, "Allow multiple selection", multiple === "on");
+  await setPhiCheck(page, "Show null option", nullOption === "on");
+  await setPhiCheck(page, "Show clear button", clear === "on");
+  await setPhiCheck(page, "Show search box", search === "on");
 }
 
 async function createSegmentedControl(page: Page, title: string, options: string[]): Promise<void> {

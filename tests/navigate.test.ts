@@ -38,6 +38,8 @@ function pageEditor(
     addTypedColumn: async () => {},
     addCalculation: async () => {},
     addDrawer: async () => {},
+    addDateControl: async () => {},
+    addListControl: async () => {},
   };
   return { editor, calls };
 }
