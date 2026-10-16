@@ -604,33 +604,14 @@ async function setBackground(page: Page, panel: Locator, color: string): Promise
   await button.click();
   if (!(await fillHexField(page, color))) fail(`Background color ${color} has no hex field.`);
   const wanted = color.toLowerCase();
-  try {
-    await page.waitForFunction(
-      (hex) => {
-        function norm(value: string): string {
-          const raw = value.trim().toLowerCase();
-          const long = raw.match(/^#([0-9a-f]{6})$/);
-          if (long?.[1]) return `#${long[1]}`;
-          const rgb = raw.match(/^rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/);
-          if (!rgb?.[1] || !rgb[2] || !rgb[3]) return raw;
-          return (
-            "#" +
-            [rgb[1], rgb[2], rgb[3]].map((part) => Number(part).toString(16).padStart(2, "0")).join("")
-          );
-        }
-        const match = [...document.querySelectorAll("button")].find(
-          (node) => (node.getAttribute("aria-label") || "") === "Background color",
-        );
-        if (!(match instanceof HTMLElement)) return false;
-        return norm(match.style.getPropertyValue("--selected-color")) === hex;
-      },
-      wanted,
-      { timeout: 3000 },
-    );
-  } catch {
-    const seen = await paintOf(button);
-    fail(`Background color ${color} is ${JSON.stringify(seen)}.`);
+  let seen = "";
+  const deadline = Date.now() + 3000;
+  while (Date.now() < deadline) {
+    seen = await paintOf(button);
+    if (seen === wanted) return;
+    await page.waitForTimeout(100);
   }
+  fail(`Background color ${color} is ${JSON.stringify(seen)}.`);
 }
 
 async function applyDrawerSettings(page: Page, settings: DrawerSettings): Promise<void> {
