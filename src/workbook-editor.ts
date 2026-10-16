@@ -815,9 +815,12 @@ async function writeInspectorTitle(page: Page, title: string): Promise<void> {
 async function containerAround(page: Page, ids: string[]): Promise<string | null> {
   return page.evaluate((elementIds) => {
     const parents = elementIds.map((id) => {
-      const el = document.querySelector(`[data-testid="element_${id}"]`);
-      const parent = el?.parentElement?.closest('[data-testid^="element_"]');
-      return (parent?.getAttribute("data-testid") || "").replace(/^element_/, "");
+      const el =
+        document.querySelector(`[data-testid="element_${id}"]`) ??
+        document.querySelector(`[data-testid="element-${id}"]`);
+      const parent = el?.parentElement?.closest('[data-testid^="element_"], [data-testid^="element-"]');
+      const testId = parent?.getAttribute("data-testid") || "";
+      return testId.replace(/^element[_-]/, "");
     });
     if (parents.some((id) => id.length === 0)) return null;
     if (new Set(parents).size !== 1) return null;
