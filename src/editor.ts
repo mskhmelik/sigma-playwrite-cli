@@ -38,6 +38,17 @@ export type Editor = {
   /** Create the drawer page, then apply only the settings that were passed. */
   addDrawer(name: string, settings: DrawerSettings): Promise<void>;
   setInsertAction(button: string, table: string, column: string, controlTitle: string): Promise<void>;
+  /**
+   * On click, insert one row into `table`.
+   * A button that already has Insert row is edited. A second call does not add another action.
+   */
+  setInsertRow(button: string, table: string, values: InsertValue[]): Promise<void>;
+  /** Rename one column header. A header that is already `name` is left as it is. */
+  renameColumn(title: string, column: string, name: string): Promise<void>;
+  /** Delete one column header. A header that is already absent is left as it is. */
+  deleteColumn(title: string, column: string): Promise<void>;
+  /** Delete one canvas element. A title that is already absent is left as it is. */
+  deleteElement(title: string): Promise<void>;
   setCloseModal(button: string): Promise<void>;
   setIfElse(
     button: string,
@@ -92,6 +103,12 @@ export type Editor = {
     search: DrawerToggle,
   ): Promise<void>;
   /**
+   * Set Value source and Source column on an existing list control.
+   * Does not create the control, write its control id, or change its canvas title.
+   * Fails when the control is missing.
+   */
+  setListSource(title: string, source: string, column: string): Promise<void>;
+  /**
    * On click, update one row in `table`.
    * The row id comes from `rowIdControl`. `column` is set from `valueControl`.
    */
@@ -112,6 +129,11 @@ export type Editor = {
   /** Wrap the named elements. Title is cnt.<handle>. Border and radius are the painted style. */
   addContainer(titles: string[], title: string, border: string, radius: string): Promise<void>;
 };
+
+export type InsertValue =
+  | { column: string; kind: "control"; control: string }
+  | { column: string; kind: "static"; value: string }
+  | { column: string; kind: "formula"; formula: string };
 
 export type ValueSource =
   | { kind: "static"; text: string }

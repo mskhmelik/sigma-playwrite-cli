@@ -14,6 +14,8 @@ import {
   saveCloseModal,
   saveIfElse,
   saveInsertAction,
+  saveInsertRow,
+  renameOneColumn,
 } from "../dist/effects/build.js";
 
 function buildEditor(pages: string[], columns: string[] = [], absent: string[] = []): { editor: Editor; calls: string[] } {
@@ -76,6 +78,19 @@ function buildEditor(pages: string[], columns: string[] = [], absent: string[] =
     },
     setInsertAction: async (button, table, column, controlTitle) => {
       calls.push(`setInsertAction:${button}:${table}:${column}:${controlTitle}`);
+    },
+    setInsertRow: async (button, table, values) => {
+      const encoded = values
+        .map((value) => {
+          if (value.kind === "control") return `${value.column}=control:${value.control}`;
+          if (value.kind === "static") return `${value.column}=static:${value.value}`;
+          return `${value.column}=formula:${value.formula}`;
+        })
+        .join(",");
+      calls.push(`setInsertRow:${button}:${table}:${encoded}`);
+    },
+    renameColumn: async (title, column, name) => {
+      calls.push(`renameColumn:${title}:${column}:${name}`);
     },
     setCloseModal: async (button) => {
       calls.push(`setCloseModal:${button}`);
@@ -251,6 +266,43 @@ test("saveInsertAction does not save when the button is missing", async () => {
   const { editor, calls } = buildEditor([]);
   await assert.rejects(() => saveInsertAction(editor, "missing", "names", "name", "c", "name"), /missing title/);
   assert.deepEqual(calls, ["findElement:missing"]);
+});
+
+test("a second saveInsertRow edits the same insert action", async () => {
+  const { editor, calls } = buildEditor([]);
+  const sets = [
+    { column: "employee_login", source: "control" as const, controlKind: "c" as const, handle: "employee_login" },
+    { column: "txt_approval_status", source: "static" as const, value: "PENDING" },
+    { column: "valid_from_date", source: "control" as const, controlKind: "c" as const, handle: "employment_start_date" },
+  ];
+  await saveInsertRow(editor, "Add employee", "names", sets);
+  await saveInsertRow(editor, "Add employee", "names", sets);
+  const encoded = "setInsertRow:Add employee:names:employee_login=control:c.employee_login,txt_approval_status=static:PENDING,valid_from_date=control:c.employment_start_date";
+  assert.deepEqual(calls, ["findElement:Add employee", "findElement:names", encoded, "findElement:Add employee", "findElement:names", encoded]);
+});
+
+test("saveInsertRow still maps a table that is not on this page", async () => {
+  const { editor, calls } = buildEditor([], [], ["BE - Input - People"]);
+  await saveInsertRow(editor, "Add employee", "BE - Input - People", [
+    { column: "txt_approval_status", source: "static", value: "PENDING" },
+  ]);
+  assert.ok(calls.some((call) => call.startsWith("setInsertRow:Add employee:BE - Input - People:")));
+});
+
+test("saveInsertRow refuses a blame column before it writes", async () => {
+  const { editor, calls } = buildEditor([]);
+  await assert.rejects(
+    () => saveInsertRow(editor, "Add employee", "names", [{ column: "nm_created_by", source: "static", value: "x" }]),
+    /cannot write "nm_created_by"/,
+  );
+  assert.ok(!calls.some((call) => call.startsWith("setInsertRow")));
+});
+
+test("renameOneColumn leaves a header that already has the target name", async () => {
+  const { editor, calls } = buildEditor([], ["nm_created_by"]);
+  const changed = await renameOneColumn(editor, "names", "Created by", "nm_created_by");
+  assert.equal(changed, false);
+  assert.deepEqual(calls, ["findElement:names", "listColumns:names"]);
 });
 
 test("saveInsertAction refuses a table that is not an input table", async () => {

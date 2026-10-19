@@ -26,3 +26,13 @@ export function requireControlKind(value: string | undefined, command: string): 
   if (value !== "c" && value !== "v") fail(`${command} requires --kind c or --kind v`);
   return value;
 }
+
+/**
+ * The canvas title wins. A control-id match is used only when that title is absent.
+ * Neither branch creates a control.
+ */
+export function resolveListControl(canvasId: string | null, controlId: string | null, title: string): string {
+  if (canvasId) return canvasId;
+  if (controlId) return controlId;
+  fail(`Control ${JSON.stringify(title)} was not found. Nothing was changed.`);
+}

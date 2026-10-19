@@ -6,8 +6,13 @@ import { runCreate } from "./create.js";
 import { runAdd, runSelect, runSet, runSize } from "./edit.js";
 import { Exit } from "./errors.js";
 import { runPlace } from "./place.js";
+import { runSelectionMove } from "./selection-drag.js";
 import { runRename } from "./rename.js";
+import { runDeleteColumn } from "./delete-column.js";
+import { runDeleteElement } from "./delete-element.js";
+import { runRenameColumn } from "./rename-column.js";
 import { runSetColumn } from "./set-column.js";
+import { runSetList } from "./set-list.js";
 import { runApi } from "./sigma-api.js";
 
 const help = `sigma-playwrite-cli — select, size, and format Sigma workbook elements in logged-in Chrome
@@ -16,6 +21,7 @@ USAGE
   sigma-playwrite-cli api <sigma api args...>
   sigma-playwrite-cli arrange --url <workbook-url> [--page <page-name>] --order "Title A,Title B"
   sigma-playwrite-cli place --url <workbook-url> [--page <page-name>] --layout "Title A=1-19:1-25,Title B=19-39:1-13"
+  sigma-playwrite-cli selection-move --url <workbook-url> [--page <page-name>] --title <title> --title <title> [--title <title>...] --rows <integer>
   sigma-playwrite-cli select --url <workbook-url> [--page <page-name>] --title <title>
   sigma-playwrite-cli size --url <workbook-url> [--page <page-name>] --title <title> --area <rowStart-rowEnd:colStart-colEnd>
   sigma-playwrite-cli size --url <workbook-url> [--page <page-name>] --title <title> --size <widthxheight>
@@ -33,12 +39,17 @@ USAGE
   sigma-playwrite-cli add --url <workbook-url> [--page <page-name>] --type container --handle <name> --title <element> [--title <element>...]
   sigma-playwrite-cli add-csv --url <workbook-url> [--page <page-name>] --file <path.csv> --title <table title> --connection <connection name>
   sigma-playwrite-cli rename --url <workbook-url> [--page <page-name>] --title <current title> --name <new title>
+  sigma-playwrite-cli rename-column --url <workbook-url> [--page <page-name>] --title <table> --column <header> --name <header>
+  sigma-playwrite-cli delete-column --url <workbook-url> [--page <page-name>] --title <table> --column <header> [--column <header>...]
+  sigma-playwrite-cli delete-element --url <workbook-url> [--page <page-name>] --title <element title>
+  sigma-playwrite-cli set-list --url <workbook-url> [--page <page-name>] --kind c|v --handle <name> --source <table> --column <column>
   sigma-playwrite-cli set-column --url <workbook-url> [--page <page-name>] --title <table title> --column <column name> [--column <column name>...] --set format=date
   sigma-playwrite-cli group-column --url <workbook-url> [--page <page-name>] --title <element> --column <column> --with <column already in the grouping>
   sigma-playwrite-cli add-column --url <workbook-url> [--page <page-name>] --title <element> --column <system column> [--column <system column>...]
   sigma-playwrite-cli add-column --url <workbook-url> [--page <page-name>] --title <element> --column <column> --type single-select --option <value> [--option <value>...]
   sigma-playwrite-cli add-column --url <workbook-url> [--page <page-name>] --title <element> --column <column> --type calculation --formula <sigma formula>
   sigma-playwrite-cli set-action --url <workbook-url> [--page <page-name>] --title <button> --effect insert-row --into <table> --column <column> --kind c|v --from-handle <name>
+  sigma-playwrite-cli set-action --url <workbook-url> [--page <page-name>] --title <button> --effect insert-row --into <table> --set <column=control:c.name|static:text|formula:expr> [--set <column=...>]
   sigma-playwrite-cli set-action --url <workbook-url> [--page <page-name>] --title <button> --effect close-modal
   sigma-playwrite-cli set-action --url <workbook-url> [--page <page-name>] --title <button> --effect if-else --into <table> --column <column> --kind c|v --from-handle <name> --modal <page>
   sigma-playwrite-cli set-action --url <workbook-url> [--page <page-name>] --title <element> --on-select <column> --effect set-control --kind c|v --handle <name> --from-column <column>
@@ -68,6 +79,10 @@ grid units and keeps the element's current top-left. A page is 24 columns wide,
 so full width is 24. A data-page table is 24x10: from column 1 row 3 that is
 3-13:1-25. size takes --area or --size, not both.
 
+selection-move shift-selects every --title and drags that selection by --rows
+grid rows. Positive --rows moves down. Each selected control keeps its width
+and height. It does not resize edges and it does not call place or size.
+
 --set repeats. Keys depend on the element type. text allows content, fill
 (theme:<swatch>), padding (on or off), and color (white). color on a text
 element uses the top-bar Text color button. An unknown key stops before any change.
@@ -94,8 +109,12 @@ build a page. add-drawer names the page tab d.<handle>. A setting left out of
 add-drawer stays as Sigma created it. An input table title is BE - <Name> or FE - <Name>. Repeat --column
 as name, name:text, or name:date, in the order the columns should appear. A bare
 name is text. The first column of a new table is text. set-action
-insert-row saves Insert row on a button, taking one column from c.<name> or
-v.<name>. set-action if-else opens --modal when that column already contains
+insert-row saves Insert row on a button. --column with --from-handle takes one
+column from c.<name> or v.<name>. Repeat --set to map many columns on that same
+action: column=control:c.name, column=static:text, or column=formula:expr. The
+same control may fill two columns. A second call edits the Insert row already
+on the button. Created by, Created at, Last updated by, Last updated at, ID,
+Row ID, id, and the renamed blame headers cannot be written. set-action if-else opens --modal when that column already contains
 the control, and otherwise inserts the row. set-action close-modal closes the
 modal that holds the button. set-action --on-select stores the clicked row:
 --from-column is written into v.<handle> or c.<handle>, replacing the previous
@@ -132,8 +151,21 @@ name, press Enter, then click the button. publish is the only command that publi
 
 add-csv uploads a CSV as a table on Add element, Data, Table, CSV. --connection
 is required. The canvas title becomes --title, not the file name. rename changes
-one canvas title from --title to --name. set-column --set format=date shows each
---column as a date, YYYY-MM-DD.
+one canvas title from --title to --name. rename-column changes one column header
+on --title from --column to --name. A header that is already --name is left as
+it is. delete-column removes each --column from that table. Repeat --column once
+per header. A header that is already absent is left as it is, and the command
+continues. txt_approval_status, nm_approved_by, dt_approved_at, and
+txt_approval_comment stop the command before any edit:
+delete-column cannot delete "<header>". delete-element removes one canvas element
+by --title. A title that is already absent is left as it is. The command prints
+"<title> already absent" and does not mark the workbook. It does not
+special-case approval columns. set-list sets Value source to --source and
+Source column to --column on the existing control c.<name> or v.<name>. It
+finds that canvas title first. A control id match is only the fallback, and
+that id is not written. set-list does not create a control or rewrite the
+canvas title. A missing control stops the command. set-column --set format=date
+shows each --column as a date, YYYY-MM-DD.
 
 Chrome must already be running with --remote-debugging-port=9333. Commands reuse
 the open workbook tab and do not open or close a tab per command. This tool
@@ -177,6 +209,16 @@ if (command === "api") {
     }
     throw error;
   }
+} else if (command === "selection-move") {
+  try {
+    await runSelectionMove(argv.slice(1));
+  } catch (error) {
+    if (error instanceof Exit) {
+      console.error(error.message);
+      process.exit(error.code);
+    }
+    throw error;
+  }
 } else if (isActionCommand(command)) {
   try {
     await runAction(command, argv.slice(1));
@@ -207,8 +249,29 @@ if (command === "api") {
     }
     throw error;
   }
-} else if (command === "add-csv" || command === "rename" || command === "set-column") {
-  const run = command === "add-csv" ? runAddCsv : command === "rename" ? runRename : runSetColumn;
+} else if (
+  command === "add-csv" ||
+  command === "rename" ||
+  command === "rename-column" ||
+  command === "set-column" ||
+  command === "delete-column" ||
+  command === "delete-element" ||
+  command === "set-list"
+) {
+  const run =
+    command === "add-csv"
+      ? runAddCsv
+      : command === "rename"
+        ? runRename
+        : command === "rename-column"
+          ? runRenameColumn
+          : command === "delete-column"
+            ? runDeleteColumn
+            : command === "delete-element"
+              ? runDeleteElement
+              : command === "set-list"
+                ? runSetList
+                : runSetColumn;
   try {
     await run(argv.slice(1));
   } catch (error) {

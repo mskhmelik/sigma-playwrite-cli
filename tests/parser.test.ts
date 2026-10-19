@@ -588,6 +588,171 @@ test("help lists add-drawer and its settings", () => {
   );
 });
 
+test("insert-row --set keeps control, static, and formula on one action", () => {
+  const sets = [
+    "employee_login=control:c.employee_login",
+    "employment_start_date=control:c.employment_start_date",
+    "valid_from_date=control:c.employment_start_date",
+    "txt_approval_status=static:PENDING",
+    "valid_from_check=formula:[employment_start_date]",
+  ];
+  const args = ["--url", url, "--title", "Add employee", "--effect", "insert-row", "--into", "BE - Input - People", ...sets.flatMap((set) => ["--set", set])];
+  const first = parseCreate("set-action", args);
+  const second = parseCreate("set-action", args);
+  assert.deepEqual(first, second);
+  assert.deepEqual(first, {
+    kind: "insert-row",
+    url,
+    page: undefined,
+    title: "Add employee",
+    into: "BE - Input - People",
+    sets: [
+      { column: "employee_login", source: "control", controlKind: "c", handle: "employee_login" },
+      { column: "employment_start_date", source: "control", controlKind: "c", handle: "employment_start_date" },
+      { column: "valid_from_date", source: "control", controlKind: "c", handle: "employment_start_date" },
+      { column: "txt_approval_status", source: "static", value: "PENDING" },
+      { column: "valid_from_check", source: "formula", formula: "[employment_start_date]" },
+    ],
+  });
+});
+
+test("insert-row refuses a blame column", () => {
+  assert.throws(
+    () =>
+      parseCreate("set-action", [
+        "--url",
+        url,
+        "--title",
+        "Add employee",
+        "--effect",
+        "insert-row",
+        "--into",
+        "BE - Input - People",
+        "--set",
+        "id=static:1",
+      ]),
+    /cannot write "id"/,
+  );
+});
+
+test("rename-column without --column is rejected", () => {
+  const result = run(["rename-column", "--url", url, "--title", "BE - Input - People", "--name", "nm_created_by"]);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /rename-column requires --column/);
+});
+
+test("delete-column without --column is rejected", () => {
+  const result = run(["delete-column", "--url", url, "--title", "BE - Input - People"]);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /delete-column requires --column/);
+  assert.doesNotMatch(result.stderr, /Unknown command/);
+});
+
+test("delete-element without --title is rejected", () => {
+  const result = run(["delete-element", "--url", url, "--page", "Data"]);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /delete-element requires --title/);
+  assert.doesNotMatch(result.stderr, /Unknown command/);
+});
+
+test("delete-element rejects an unknown flag", () => {
+  const result = run(["delete-element", "--url", url, "--title", "c.employment_end_date", "--column", "city"]);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /Unknown argument: --column/);
+  assert.doesNotMatch(result.stderr, /Unknown command/);
+});
+
+test("set-list without --column is rejected", () => {
+  const result = run([
+    "set-list",
+    "--url",
+    url,
+    "--kind",
+    "v",
+    "--handle",
+    "role",
+    "--source",
+    "Raw - Dim - Employee role",
+  ]);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /set-list requires --column/);
+  assert.doesNotMatch(result.stderr, /Unknown command/);
+});
+
+test("set-list rejects a title rename", () => {
+  const result = run([
+    "set-list",
+    "--url",
+    url,
+    "--kind",
+    "c",
+    "--handle",
+    "role",
+    "--source",
+    "Raw - Dim - Employee role",
+    "--column",
+    "employee_role_code",
+    "--title",
+    "Role",
+  ]);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /Unknown argument: --title/);
+  assert.doesNotMatch(result.stderr, /Unknown command/);
+});
+
+test("delete-column refuses txt_approval_comment", () => {
+  const result = run([
+    "delete-column",
+    "--url",
+    url,
+    "--title",
+    "BE - Input - People",
+    "--column",
+    "txt_approval_comment",
+  ]);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /delete-column cannot delete "txt_approval_comment"/);
+  assert.doesNotMatch(result.stderr, /Unknown command/);
+});
+
+test("selection-move without --title is rejected", () => {
+  const result = run(["selection-move", "--url", url, "--rows", "2"]);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /selection-move requires at least two --title values/);
+  assert.doesNotMatch(result.stderr, /Unknown command/);
+});
+
+test("selection-move with one --title is rejected", () => {
+  const result = run(["selection-move", "--url", url, "--title", "Title A", "--rows", "2"]);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /selection-move requires at least two --title values/);
+  assert.doesNotMatch(result.stderr, /Unknown command/);
+});
+
+test("selection-move without --rows is rejected", () => {
+  const result = run(["selection-move", "--url", url, "--title", "Title A", "--title", "Title B"]);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /selection-move requires --rows/);
+  assert.doesNotMatch(result.stderr, /Unknown command/);
+});
+
+test("selection-move with --rows 0 is rejected", () => {
+  const result = run([
+    "selection-move",
+    "--url",
+    url,
+    "--title",
+    "Title A",
+    "--title",
+    "Title B",
+    "--rows",
+    "0",
+  ]);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /selection-move requires a non-zero integer --rows/);
+  assert.doesNotMatch(result.stderr, /Unknown command/);
+});
+
 test("an input-table column type other than text or date is rejected", () => {
   assert.throws(
     () =>
