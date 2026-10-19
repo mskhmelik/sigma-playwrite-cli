@@ -1478,7 +1478,7 @@ function eachInsertColumn(visit: (column: string, root: InsertFiber) => void): v
   const seen = new Set<string>();
   for (const el of document.querySelectorAll("*")) {
     const text = ownText(el);
-    if (!text || seen.has(text) || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(text)) continue;
+    if (!text || seen.has(text) || text.length > 200) continue;
     const root = insertColumnRoot(text);
     if (!root) continue;
     seen.add(text);
