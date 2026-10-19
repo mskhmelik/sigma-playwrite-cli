@@ -166,6 +166,30 @@ test("a stack becomes three across without overlapping on the way", () => {
   assert.deepEqual(live[2], items[2]?.target);
 });
 
+test("a lane clear that is not a direct drag still finishes on the targets", () => {
+  const items = [
+    {
+      index: 0,
+      current: { rowStart: 1, colStart: 1, rowEnd: 4, colEnd: 13 },
+      target: { rowStart: 8, colStart: 1, rowEnd: 11, colEnd: 13 },
+    },
+  ];
+  const obstacle: GridArea = { rowStart: 4, colStart: 1, rowEnd: 8, colEnd: 13 };
+  const steps = planPage(items, [obstacle]);
+  const live = items.map((item) => ({ ...item.current }));
+  let sawSidestep = false;
+  for (const step of steps) {
+    const before = live[step.index];
+    if (!before) throw new Error(`missing item ${step.index}`);
+    const others = [...live.filter((_, index) => index !== step.index), obstacle];
+    const plan = planPlacement(before, step.area, others);
+    if (plan.some((part) => part.index !== null)) sawSidestep = true;
+    live[step.index] = { ...step.area };
+  }
+  assert.equal(sawSidestep, true);
+  assert.deepEqual(live[0], items[0]?.target);
+});
+
 test("a free target beside a full-width neighbor does not take the lane", () => {
   const item = {
     index: 0,

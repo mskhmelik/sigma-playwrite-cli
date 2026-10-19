@@ -57,37 +57,39 @@ export function parseRename(args: string[]): RenameCommand {
 }
 
 async function readCanvasTitle(page: Page, id: string): Promise<string> {
-  const node = page.locator(`[data-selectable="${id}"] [data-testid="dynamic-title"]`).first();
-  return ((await node.innerText().catch(() => "")) || "").trim();
+  return page.evaluate((elementId) => {
+    const node =
+      document.querySelector(`[data-testid="element_${elementId}"] [data-testid="dynamic-title"]`) ??
+      document.querySelector(`[data-testid="element-${elementId}"] [data-testid="dynamic-title"]`) ??
+      document.querySelector(`[data-selectable="${elementId}"] [data-testid="dynamic-title"]`);
+    return (node?.textContent || "").trim();
+  }, id);
 }
 
 async function writeTitle(page: Page, id: string, title: string): Promise<void> {
-  const field = page.locator(`[data-selectable="${id}"] [data-testid="dynamic-title"] [contenteditable="true"]`).first();
-  try {
-    await field.click({ timeout: 5000 });
-  } catch {
-    fail(`Element ${id} has no title to rename.`);
+  const write = async () => {
+    const editable = page.locator(`[data-testid="element_${id}"] [data-testid="dynamic-title"] [contenteditable="true"]`).first();
+    const titled = page.locator(`[data-testid="element_${id}"] [data-testid="dynamic-title"]`).first();
+    const selectable = page.locator(`[data-selectable="${id}"] [data-testid="dynamic-title"]`).first();
+    const target = (await editable.count()) > 0 ? editable : (await titled.count()) > 0 ? titled : selectable;
+    try {
+      await target.click({ force: true, timeout: 5000 });
+    } catch {
+      fail(`Element ${id} has no title to rename.`);
+    }
+    await page.keyboard.press("Meta+A");
+    await page.keyboard.insertText(title);
+    await page.keyboard.press("Enter");
+  };
+  await write();
+  await page.waitForTimeout(600);
+  let seen = await readCanvasTitle(page, id);
+  if (seen !== title) {
+    await write();
+    await page.waitForTimeout(600);
+    seen = await readCanvasTitle(page, id);
   }
-  await page.keyboard.press("Meta+A");
-  await page.keyboard.insertText(title);
-  await page.keyboard.press("Enter");
-  await page.keyboard.press("Tab");
-  try {
-    await page.waitForFunction(
-      ({ elementId, wanted }) => {
-        const node = document.querySelector(`[data-selectable="${elementId}"] [data-testid="dynamic-title"]`);
-        if (!(node instanceof HTMLElement)) return false;
-        const active = document.activeElement;
-        if (active instanceof HTMLElement && node.contains(active) && active.isContentEditable) return false;
-        return (node.textContent || "").trim() === wanted;
-      },
-      { elementId: id, wanted: title },
-      { timeout: 5000 },
-    );
-  } catch {
-    const seen = await readCanvasTitle(page, id);
-    fail(`Title is ${JSON.stringify(seen)}, expected ${JSON.stringify(title)}.`);
-  }
+  if (seen !== title) fail(`Title is ${JSON.stringify(seen)}, expected ${JSON.stringify(title)}.`);
 }
 
 export async function runRename(args: string[]): Promise<void> {

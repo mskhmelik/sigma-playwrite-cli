@@ -564,7 +564,11 @@ export function planPage(items: readonly PageItem[], obstacles: readonly GridAre
     if (!current) throw new Error("Placement step names a missing neighbor");
     if (sameArea(current, next)) return;
     const plan = planPlacement(current, next, othersOf(index));
-    if (plan.some((step) => step.index !== null)) throw new Error("Page move is not direct");
+    if (plan.some((step) => step.index !== null)) {
+      steps.push({ index, area: cloneArea(next) });
+      live.set(index, cloneArea(next));
+      return;
+    }
     for (const step of plan) steps.push({ index, area: cloneArea(step.area) });
     const landed = plan[plan.length - 1];
     if (!landed) return;
@@ -1332,6 +1336,42 @@ export async function placeArea(
   if (!sameArea(landed, target)) {
     fail(`${label}: landed on ${formatGridArea(landed)}, wanted ${formatGridArea(target)}`);
   }
+  for (let index = 0; index < siblings.length; index += 1) {
+    const sibling = siblings[index];
+    if (!sibling) continue;
+    const now = await readGridArea(page, sibling.id);
+    const intended = [...steps].reverse().find((step) => step.index === index);
+    const goal = intended ? intended.area : sibling.area;
+    if (sameArea(now, goal)) continue;
+    await restoreArea(page, sibling.id, goal, id, onChanged, sibling.id);
+  }
+}
+
+async function restoreArea(
+  page: Page,
+  id: string,
+  goal: GridArea,
+  neighborId: string,
+  onChanged: () => void,
+  label: string,
+): Promise<void> {
+  const current = await readGridArea(page, id);
+  if (sameArea(current, goal)) return;
+  const neighbor = await readGridArea(page, neighborId);
+  let steps: PlacementStep[];
+  try {
+    steps = planPlacement(current, goal, [neighbor]);
+  } catch (error) {
+    if (error instanceof Exit) throw error;
+    fail(error instanceof Error ? error.message : String(error));
+  }
+  for (const step of steps) {
+    if (step.index === null) {
+      await moveBetween(page, id, step.area, onChanged, label);
+      continue;
+    }
+    await moveBetween(page, neighborId, step.area, onChanged, neighborId);
+  }
 }
 
 function parsePlaceArgs(args: string[]): { url: string; page?: string; layout: string } {
@@ -1418,7 +1458,7 @@ export async function runPlace(args: string[]): Promise<void> {
           if (step.index === null) fail("Placement step names a missing neighbor");
           const item = located[step.index];
           if (!item) fail("Placement step names a missing neighbor");
-          await moveBetween(page, item.id, step.area, onChanged, item.title);
+          await placeArea(page, item.id, step.area, onChanged, item.title);
         }
       }
     } catch (error) {

@@ -19,12 +19,14 @@ import {
   saveCloseModal,
   saveIfElse,
   saveInsertAction,
+  saveInsertRow,
   saveOnSelectControl,
   saveUpdateRow,
 } from "./effects/build.js";
 import type { DrawerSettings, DrawerSize, DrawerToggle, Editor } from "./editor.js";
 import { fail } from "./errors.js";
 import { drawerTitle, requireControlKind, type HandleKind } from "./handles.js";
+import { parseInsertSets, type InsertAssignment } from "./insert-set.js";
 import { markOwned, type OwnedWorkbook } from "./ledger.js";
 import { ensureEditor } from "./place.js";
 import { workbookIdentity } from "./sigma-api.js";
@@ -87,6 +89,14 @@ export type CreateCommand =
       column: string;
       controlKind: HandleKind;
       handle: string;
+    }
+  | {
+      kind: "insert-row";
+      url: string;
+      page?: string;
+      title: string;
+      into: string;
+      sets: InsertAssignment[];
     }
   | { kind: "add-modal"; url: string; page?: string; name: string }
   | { kind: "add-drawer"; url: string; page?: string; name: string; settings: DrawerSettings }
@@ -440,6 +450,12 @@ export function parseCreate(command: string, args: string[]): CreateCommand {
       allow(bag, ["url", "page", "title", "effect"]);
       return { kind: "close-modal", url, page, title };
     }
+    if (effect === "insert-row" && bag.set) {
+      allow(bag, ["url", "page", "title", "effect", "into", "set"]);
+      const into = one(bag, "into");
+      if (!into) fail("set-action requires --into");
+      return { kind: "insert-row", url, page, title, into, sets: parseInsertSets(bag.set) };
+    }
     if (effect === "if-else") {
       allow(bag, ["url", "page", "title", "effect", "into", "column", "from-handle", "kind", "modal"]);
       const into = one(bag, "into");
@@ -513,6 +529,8 @@ export async function applyCreate(editor: Editor, parsed: CreateCommand, mark: (
       );
     } else if (parsed.kind === "set-action") {
       await saveInsertAction(editor, parsed.title, parsed.into, parsed.column, parsed.controlKind, parsed.handle);
+    } else if (parsed.kind === "insert-row") {
+      await saveInsertRow(editor, parsed.title, parsed.into, parsed.sets);
     } else if (parsed.kind === "group-column") {
       await groupIntoExisting(editor, parsed.title, parsed.column, parsed.withColumn);
     } else if (parsed.kind === "add-column") {

@@ -1,9 +1,10 @@
 import type { DrawerSettings, Editor } from "../editor.js";
+import { insertValues, type InsertAssignment } from "../insert-set.js";
+import { columnDeleteAction, columnTitle, refuseDeleteColumn, refuseInsertColumn } from "../system-columns.js";
 import { groupingLanded, planGrouping } from "../grouping.js";
 import { containerBorder, cornerRadius } from "../container.js";
 import { controlTitle, containerTitle, type HandleKind } from "../handles.js";
 import type { GridArea } from "../place.js";
-import { columnTitle } from "../system-columns.js";
 
 export async function addNamedPage(editor: Editor, name: string): Promise<void> {
   const page = name.trim();
@@ -104,6 +105,109 @@ export async function saveInsertAction(
   const target = await editor.findElement(table);
   if (!target.inputTable) throw new Error("not an input table");
   await editor.setInsertAction(button, table, column, controlTitle(kind, handle));
+}
+
+/** Saves one Insert row. A later call edits that action instead of adding another. */
+export async function saveInsertRow(
+  editor: Editor,
+  button: string,
+  table: string,
+  sets: InsertAssignment[],
+): Promise<void> {
+  if (sets.length === 0) throw new Error("insert row has no values");
+  for (const set of sets) refuseInsertColumn(set.column);
+  try {
+    await editor.findElement(button);
+  } catch {
+    throw new Error("missing title");
+  }
+  try {
+    const target = await editor.findElement(table);
+    if (!target.inputTable) throw new Error("not an input table");
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "";
+    if (!message.includes("was not found")) throw error;
+  }
+  await editor.setInsertRow(button, table, insertValues(sets));
+}
+
+export type ElementDeleteAction = "skip" | "delete";
+
+/** An absent canvas title is skip. A title that is present is delete. */
+export function elementDeleteAction(title: string, titles: readonly string[]): ElementDeleteAction {
+  if (!titles.includes(title)) return "skip";
+  return "delete";
+}
+
+/** Deletes one canvas element. An absent title is left as it is. */
+export async function deleteNamedElement(editor: Editor, title: string): Promise<"absent" | "deleted"> {
+  let titles: string[] = [];
+  try {
+    await editor.findElement(title);
+    titles = [title];
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "";
+    if (!message.includes("was not found")) throw error;
+  }
+  if (elementDeleteAction(title, titles) === "skip") return "absent";
+  await editor.deleteElement(title);
+  return "deleted";
+}
+
+/** Sets Value source and Source column. Does not create the control or rewrite its title. */
+export async function setListControl(
+  editor: Editor,
+  kind: HandleKind,
+  handle: string,
+  source: string,
+  column: string,
+): Promise<void> {
+  await editor.setListSource(controlTitle(kind, handle), source, column);
+}
+
+/** Deletes headers that are still on the table. An absent header is left as it is. */
+export async function deleteNamedColumns(
+  editor: Editor,
+  title: string,
+  columns: string[],
+): Promise<{ deleted: string[]; skipped: string[] }> {
+  for (const column of columns) refuseDeleteColumn(column);
+  await editor.findElement(title);
+  const present = [...(await editor.listColumns(title))];
+  const deleted: string[] = [];
+  const skipped: string[] = [];
+  for (const column of columns) {
+    const action = columnDeleteAction(column, present);
+    if (action === "refuse") {
+      refuseDeleteColumn(column);
+      continue;
+    }
+    if (action === "skip") {
+      skipped.push(column);
+      continue;
+    }
+    await editor.deleteColumn(title, column);
+    const index = present.indexOf(column);
+    if (index >= 0) present.splice(index, 1);
+    deleted.push(column);
+  }
+  return { deleted, skipped };
+}
+
+/** Renames one header. A column that is already `name` is left as it is. */
+export async function renameOneColumn(
+  editor: Editor,
+  title: string,
+  column: string,
+  name: string,
+): Promise<boolean> {
+  if (!column.trim() || !name.trim()) throw new Error("missing column");
+  await editor.findElement(title);
+  const present = await editor.listColumns(title);
+  if (present.includes(name)) return false;
+  if (!present.includes(column)) throw new Error("missing column");
+  await editor.renameColumn(title, column, name);
+  return true;
 }
 
 export async function publishWorkbook(editor: Editor): Promise<void> {

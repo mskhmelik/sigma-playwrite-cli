@@ -1,11 +1,11 @@
 import type { Locator, Page } from "playwright";
-import type { DrawerSettings, Editor } from "./editor.js";
+import type { DrawerSettings, Editor, InsertValue } from "./editor.js";
 import { Exit, fail } from "./errors.js";
 import { locateTitle } from "./edit.js";
-import { controlTitle, type HandleKind } from "./handles.js";
+import { controlTitle, resolveListControl, type HandleKind } from "./handles.js";
 import { groupShortcut, inspectorHeader, selectionClick } from "./container.js";
 import { toEditUrl } from "./chrome.js";
-import { confirmSelected, elementHosts, placeArea, readModel } from "./place.js";
+import { confirmSelected, elementHosts, placeArea, readModel, selectElement } from "./place.js";
 import { columnTitle } from "./system-columns.js";
 
 async function pageTabs(page: Page): Promise<{ id: string; name: string; selected: boolean }[]> {
@@ -143,11 +143,26 @@ export function workbookEditor(page: Page): Editor {
     async addListControl(title, source, column, multiple, nullOption, clear, search) {
       await createListControl(page, title, source, column, multiple, nullOption, clear, search);
     },
+    async setListSource(title, source, column) {
+      await setExistingListSource(page, title, source, column);
+    },
     async addButton(title) {
       await createButton(page, title);
     },
     async setInsertAction(button, table, column, controlTitle) {
       await saveButtonInsert(page, button, table, column, controlTitle);
+    },
+    async setInsertRow(button, table, values) {
+      await saveMappedInsert(page, button, table, values);
+    },
+    async renameColumn(title, column, name) {
+      await renameExistingColumn(page, title, column, name);
+    },
+    async deleteColumn(title, column) {
+      await deleteExistingColumn(page, title, column);
+    },
+    async deleteElement(title) {
+      await deleteExistingElement(page, title);
     },
     async setCloseModal(button) {
       await saveButtonClose(page, button);
@@ -399,17 +414,18 @@ async function createDrawer(page: Page, name: string, settings: DrawerSettings):
   await clickBottomButton(page, "Layout");
   const item = page.getByRole("menuitem", { name: "Drawer", exact: true });
   try {
-    await item.first().waitFor({ state: "visible", timeout: 5000 });
+    await item.first().waitFor({ state: "visible", timeout: 1500 });
   } catch {
-    fail("Drawer menu item was not found.");
+    // Layout tiles are not menuitems. The Drawer tile is a sized div.
   }
-  if ((await item.count()) !== 1) fail("Drawer menu item was not found.");
-  await item.click();
+  if ((await item.count()) === 1) await item.click();
+  else await clickNamedTile(page, "Drawer");
   await page.waitForTimeout(600);
   const created = (await pageTabs(page)).filter((tab) => !before.has(tab.id));
   if (created.length !== 1) fail(`Expected one new drawer, found ${created.length}.`);
   const id = created[0].id;
-  await page.locator(`[data-testid="page-dropdown-${id}"]`).click();
+  await page.keyboard.press("Escape");
+  await page.locator(`[data-testid="page-dropdown-${id}"]`).click({ force: true });
   await page.locator('[data-testid="menuitem-rename"]').click();
   const field = page.locator('input[aria-label^="Rename"]');
   await field.fill(name);
@@ -494,11 +510,52 @@ function sizeWord(value: string): string {
   return "Large";
 }
 
+async function buttonBesideLabel(panel: Locator, label: string): Promise<Locator | null> {
+  const found = await panel.evaluate((root, wanted) => {
+    root.querySelectorAll("[data-size-target]").forEach((el) => el.removeAttribute("data-size-target"));
+    const ownText = (el: Element) =>
+      [...el.childNodes]
+        .filter((node) => node.nodeType === Node.TEXT_NODE)
+        .map((node) => node.textContent || "")
+        .join("")
+        .replace(/\s+/g, " ")
+        .trim();
+    const visible = (el: Element) => {
+      if (!(el instanceof HTMLElement)) return false;
+      const rect = el.getBoundingClientRect();
+      return rect.width > 0 && rect.height > 0;
+    };
+    const labels = [...root.querySelectorAll("*")].filter((el) => ownText(el) === wanted && visible(el));
+    for (const marked of labels) {
+      let scope: HTMLElement | null = marked.parentElement;
+      for (let depth = 0; depth < 6 && scope; depth += 1) {
+        const buttons = [...scope.querySelectorAll("button")].filter((button) => {
+          if (!visible(button)) return false;
+          const text = (button.textContent || "").replace(/\s+/g, " ").trim();
+          if (!/^(?:Small|Medium|Large)$/.test(text)) return false;
+          const labelBox = marked.getBoundingClientRect();
+          const box = button.getBoundingClientRect();
+          return Math.abs(box.top - labelBox.top) < 28;
+        });
+        if (buttons.length === 1 && buttons[0] instanceof HTMLElement) {
+          buttons[0].setAttribute("data-size-target", "1");
+          return true;
+        }
+        scope = scope.parentElement;
+      }
+    }
+    return false;
+  }, label);
+  if (!found) return null;
+  return panel.locator("[data-size-target='1']").first();
+}
+
 async function chooseWord(page: Page, panel: Locator, name: RegExp, value: string, label: string): Promise<void> {
   const word = sizeWord(value);
   const button = panel.getByRole("button", { name });
   const combo = panel.getByRole("combobox", { name });
-  const control = (await button.count()) === 1 ? button : (await combo.count()) === 1 ? combo : null;
+  const beside = (await button.count()) === 1 || (await combo.count()) === 1 ? null : await buttonBesideLabel(panel, label);
+  const control = (await button.count()) === 1 ? button : (await combo.count()) === 1 ? combo : beside;
   if (!control) fail(`${label} control was not found.`);
   const tag = await control.evaluate((el) => el.tagName.toLowerCase());
   if (tag === "select") {
@@ -560,6 +617,62 @@ async function selectNearby(button: Locator, word: string): Promise<boolean> {
   await element.selectOption({ index });
   await element.dispose();
   return true;
+}
+
+async function setHeaderSwitch(page: Page, panel: Locator, label: string, wantOn: boolean): Promise<void> {
+  const read = async () =>
+    panel.evaluate((root, wanted) => {
+      root.querySelectorAll("[data-header-switch]").forEach((el) => el.removeAttribute("data-header-switch"));
+      const ownText = (el: Element) =>
+        [...el.childNodes]
+          .filter((node) => node.nodeType === Node.TEXT_NODE)
+          .map((node) => node.textContent || "")
+          .join("")
+          .replace(/\s+/g, " ")
+          .trim();
+      const visible = (el: Element) => {
+        if (!(el instanceof HTMLElement)) return false;
+        const rect = el.getBoundingClientRect();
+        return rect.width > 0 && rect.height > 0;
+      };
+      const markedOn = (el: Element) => {
+        const named = el instanceof HTMLElement ? el.className.toString() : "";
+        if (named.includes("khymoU")) return true;
+        return [...el.querySelectorAll("*")].some(
+          (node) => node instanceof HTMLElement && node.className.toString().includes("khymoU"),
+        );
+      };
+      const labels = [...root.querySelectorAll("*")].filter((el) => ownText(el) === wanted && visible(el));
+      if (labels.length !== 1) return { count: labels.length, on: false };
+      const marked = labels[0];
+      if (!(marked instanceof HTMLElement)) return { count: 0, on: false };
+      let scope: HTMLElement | null = marked.parentElement;
+      for (let depth = 0; depth < 6 && scope; depth += 1) {
+        const buttons = [...scope.querySelectorAll("button, [role='switch']")].filter((button) => {
+          if (!(button instanceof HTMLElement) || !visible(button)) return false;
+          const text = (button.textContent || "").replace(/\s+/g, " ").trim();
+          if (/^(?:Small|Medium|Large)$/.test(text)) return false;
+          const labelBox = marked.getBoundingClientRect();
+          const box = button.getBoundingClientRect();
+          return Math.abs(box.top - labelBox.top) < 28;
+        });
+        if (buttons.length === 1 && buttons[0] instanceof HTMLElement) {
+          buttons[0].setAttribute("data-header-switch", "1");
+          return { count: 1, on: markedOn(buttons[0]) };
+        }
+        scope = scope.parentElement;
+      }
+      return { count: 0, on: false };
+    }, label);
+  const before = await read();
+  if (before.count !== 1) fail(`${label} switch was not found.`);
+  if (before.on === wantOn) return;
+  const sw = panel.locator("[data-header-switch='1']").first();
+  const box = await sw.boundingBox();
+  if (!box) fail(`${label} switch was not found.`);
+  await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+  const after = await read();
+  if (after.on !== wantOn) fail(`${label} did not turn ${wantOn ? "on" : "off"}.`);
 }
 
 async function setChecked(panel: Locator, name: RegExp, wantOn: boolean, label: string): Promise<void> {
@@ -665,8 +778,8 @@ async function applyDrawerSettings(page: Page, settings: DrawerSettings): Promis
   if (settings.padding) await setChecked(panel, /Padding/, settings.padding === "on", "Padding");
   if (settings.elementGap) await setChecked(panel, /Element gap/, settings.elementGap === "on", "Element gap");
   if (settings.pageOverlay) await setChecked(panel, /Page overlay/, settings.pageOverlay === "on", "Page overlay");
-  if (settings.header) await setChecked(panel, /Show title/, settings.header === "on", "Show title");
-  if (settings.closeIcon) await setChecked(panel, /Show close icon/, settings.closeIcon === "on", "Show close icon");
+  if (settings.header) await setHeaderSwitch(page, panel, "Show title", settings.header === "on");
+  if (settings.closeIcon) await setHeaderSwitch(page, panel, "Show close icon", settings.closeIcon === "on");
   if (settings.background) await setBackground(page, panel, settings.background);
 }
 
@@ -726,7 +839,9 @@ async function renameInputColumn(page: Page, column: string): Promise<void> {
 async function setControlId(page: Page, elementId: string, title: string): Promise<void> {
   await page.locator(`[data-selectable="${elementId}"], [data-testid="element-${elementId}"]`).first().click();
   const settings = page.getByRole("tab", { name: "Settings", exact: true });
+  const properties = page.getByRole("tab", { name: "Properties", exact: true });
   if ((await settings.count()) > 0) await settings.first().click();
+  else if ((await properties.count()) > 0) await properties.first().click();
   const named = page.getByRole("textbox", { name: /control id/i });
   const placeholder = page.locator('input[placeholder="control-id"], input[placeholder="Control ID"]');
   const field = (await named.count()) > 0 ? named.first() : placeholder.first();
@@ -1060,40 +1175,452 @@ async function saveButtonInsert(
   column: string,
   controlTitle: string,
 ): Promise<void> {
-  const target = await locateTitle(page, table);
-  const found = await locateTitle(page, button);
-  await page.locator(`[data-selectable="${found.id}"], [data-testid="element-${found.id}"]`).first().click();
-  await page.getByRole("tab", { name: "Actions" }).click();
-  await page.getByRole("button", { name: "Add action", exact: true }).click();
+  await saveMappedInsert(page, button, table, [{ column, kind: "control", control: controlTitle }]);
+}
+
+async function saveMappedInsert(
+  page: Page,
+  button: string,
+  table: string,
+  values: InsertValue[],
+): Promise<void> {
+  let targetId = "";
+  try {
+    targetId = (await locateTitle(page, table)).id;
+  } catch (error) {
+    if (!(error instanceof Exit) || !error.message.includes("was not found")) throw error;
+  }
+  const { heading, dialog } = await openInsertDialog(page, button);
+  await selectIntoTable(page, dialog, table, targetId);
+  for (const value of values) {
+    try {
+      await dialog.getByText(value.column, { exact: true }).first().waitFor({ state: "visible", timeout: 5000 });
+    } catch {
+      fail(`Insert row did not target column ${JSON.stringify(value.column)}.`);
+    }
+    await writeInsertValue(page, dialog, value);
+    console.log(`${value.column} <= ${insertValueLabel(value)}`);
+  }
+  const mapped = values.map((value) => value.column);
+  await clearUnmappedInsertColumns(page, mapped);
+  await page.waitForTimeout(400);
+  for (const value of values) {
+    if (!(await insertValueCommitted(page, value))) fail(insertMiss(value));
+  }
+  const stuck = await page.evaluate(insertBridge, { op: "stuck", wanted: mapped });
+  if (stuck.length > 0) fail(`Insert row still maps ${stuck.join(", ")}.`);
+  const blanks = await blankInsertColumns(page, mapped);
+  for (const column of blanks) console.log(`${column} <= blank`);
+  await closeActionDialog(page, dialog, heading);
+}
+
+async function dismissInsertError(page: Page): Promise<void> {
+  const error = page.getByRole("heading", { name: /error in insert row/i });
+  if ((await error.count()) < 1) return;
+  const close = page.getByRole("button", { name: "Close", exact: true });
+  if ((await close.count()) > 0) await close.last().click();
+  else await page.keyboard.press("Escape");
+  try {
+    await error.first().waitFor({ state: "hidden", timeout: 3000 });
+  } catch {
+    await page.keyboard.press("Escape");
+  }
+}
+
+async function openInsertDialog(page: Page, button: string): Promise<{ heading: Locator; dialog: Locator }> {
+  const listed = await actionPanelText(page, button);
+  await dismissInsertError(page);
+  const heading = page.getByRole("heading", { name: /insert row into/i }).last();
+  if (/insert row/i.test(listed)) {
+    const row = page.getByRole("button", { name: /insert row into/i }).first();
+    try {
+      await row.hover();
+      const more = row
+        .locator("xpath=ancestor::*[.//button[normalize-space()='More…']][1]")
+        .getByRole("button", { name: "More…" })
+        .last();
+      await more.click();
+      await page.getByRole("menuitem", { name: "Edit", exact: true }).click();
+      await page.getByText("Set column values", { exact: true }).waitFor({ state: "visible", timeout: 8000 });
+    } catch (error) {
+      const message = error instanceof Error ? error.message.split("\n")[0] : String(error);
+      fail(`Insert row is on the button, but it did not open. ${message}`);
+    }
+    return { heading, dialog: await insertEditor(page, heading) };
+  }
+  const addAction = page.getByRole("button", { name: "Add action", exact: true });
+  if ((await addAction.count()) < 1) {
+    const addSequence = page.getByRole("button", { name: "Add action sequence", exact: true });
+    if ((await addSequence.count()) < 1) fail("Insert row has no action sequence to add to.");
+    await addSequence.click();
+  }
+  await page.getByRole("button", { name: "Add action", exact: true }).first().click();
   await page.getByRole("button", { name: "Open options Action" }).click();
   await page.getByRole("option", { name: "Insert row", exact: true }).click();
-  const heading = page.getByRole("heading", { name: /insert row into/i });
-  await heading.waitFor({ state: "visible", timeout: 5000 });
-  const dialog = await insertRowDialog(page, heading);
-  await selectIntoTable(page, dialog, table, target.id);
+  await page.getByText("Set column values", { exact: true }).waitFor({ state: "visible", timeout: 8000 });
+  return { heading, dialog: await insertEditor(page, heading) };
+}
+
+async function insertEditor(page: Page, heading: Locator): Promise<Locator> {
+  const form = page.locator("div").filter({ has: heading }).filter({ hasText: "Set column values" });
+  if ((await form.count()) > 0) return form.last();
+  return actionSurface(page, heading);
+}
+
+type InsertCommit = {
+  column: string;
+  kind: InsertValue["kind"];
+  control: string;
+  text: string;
+  formula: string;
+};
+
+function insertCommit(value: InsertValue): InsertCommit {
+  return {
+    column: value.column,
+    kind: value.kind,
+    control: value.kind === "control" ? value.control : "",
+    text: value.kind === "static" ? value.value : "",
+    formula: value.kind === "formula" ? value.formula : "",
+  };
+}
+
+function insertValueLabel(value: InsertValue): string {
+  if (value.kind === "control") return value.control;
+  if (value.kind === "static") return value.value;
+  return value.formula;
+}
+
+async function writeInsertValue(page: Page, dialog: Locator, value: InsertValue): Promise<void> {
+  if (await insertValueCommitted(page, value)) return;
+  const commit = insertCommit(value);
+  let result = await page.evaluate(insertBridge, { op: "commit", commit });
+  for (let attempt = 0; result.retry && attempt < 2; attempt++) {
+    await page.waitForTimeout(400);
+    result = await page.evaluate(insertBridge, { op: "commit", commit });
+  }
+  if (!result.ok) fail(result.error || insertMiss(value));
+  if (value.kind === "formula" && result.retry) {
+    await writeRowField(page, columnRow(dialog, value.column), value.formula);
+  }
+  await page.waitForTimeout(150);
+  if (!(await insertValueCommitted(page, value))) fail(insertMiss(value));
+}
+
+async function clearUnmappedInsertColumns(page: Page, wanted: string[]): Promise<void> {
+  const failed = await page.evaluate(insertBridge, { op: "clear", wanted });
+  if (failed) fail(failed);
+}
+
+async function blankInsertColumns(page: Page, wanted: string[]): Promise<string[]> {
+  return page.evaluate(insertBridge, { op: "blanks", wanted });
+}
+
+async function insertValueCommitted(page: Page, value: InsertValue): Promise<boolean> {
+  return page.evaluate(insertBridge, { op: "match", commit: insertCommit(value) });
+}
+
+function insertBridge(request: any): any {
+function commitInsertValue(input: InsertCommit): { ok: boolean; error: string; retry: boolean } {
+  const root = insertColumnRoot(input.column);
+  if (!root) return { ok: false, error: `Insert row did not target column ${JSON.stringify(input.column)}.`, retry: false };
+  if (input.kind === "static") {
+    const setter = insertSetter(root);
+    if (!setter) return { ok: false, error: `Insert row has no value for ${JSON.stringify(input.column)}.`, retry: false };
+    const payload = staticInsertPayload(root, input.text);
+    if (!payload) {
+      return { ok: false, error: `Insert row cannot store ${JSON.stringify(input.text)} on ${JSON.stringify(input.column)}.`, retry: false };
+    }
+    setter.memoizedProps.setValue(payload);
+    return { ok: true, error: "", retry: false };
+  }
+  if (input.kind === "control") {
+    const picker = insertControlPicker(root);
+    if (!picker) {
+      const select = insertKindSelect(root);
+      if (!select) return { ok: false, error: `Insert row did not offer Control for ${JSON.stringify(input.column)}.`, retry: false };
+      setNativeSelect(select, "variable");
+      return { ok: false, error: "", retry: true };
+    }
+    const leaf = findControlLeaf(picker.memoizedProps.pageSummaries, input.control);
+    if (!leaf) return { ok: false, error: `Insert row did not offer ${JSON.stringify(input.control)}.`, retry: false };
+    picker.memoizedProps.onSelect(leaf.id);
+    return { ok: true, error: "", retry: false };
+  }
+  const select = insertKindSelect(root);
+  if (!select) return { ok: false, error: `Insert row did not offer Formula for ${JSON.stringify(input.column)}.`, retry: false };
+  if (select.value !== "formula") {
+    setNativeSelect(select, "formula");
+    return { ok: true, error: "", retry: true };
+  }
+  return { ok: true, error: "", retry: true };
+}
+
+function clearOtherInsertColumns(wanted: string[]): string {
+  const keep = new Set(wanted);
+  let error = "";
+  eachInsertColumn((column, root) => {
+    if (keep.has(column)) return;
+    const select = insertKindSelect(root);
+    if (select && select.value !== "const") setNativeSelect(select, "const");
+    const setter = insertSetter(root);
+    if (!setter) return;
+    try {
+      setter.memoizedProps.setValue(emptyInsertPayload(root));
+    } catch (caught) {
+      error = caught instanceof Error ? caught.message : String(caught);
+    }
+  });
+  return error;
+}
+
+function blankInsertColumnNames(wanted: string[]): string[] {
+  const keep = new Set(wanted);
+  const blanks: string[] = [];
+  eachInsertColumn((column, root) => {
+    if (keep.has(column)) return;
+    const setter = insertSetter(root);
+    const value = setter?.memoizedProps.value;
+    const inner = value?.type === "const" ? value.value : null;
+    const type = inner && typeof inner === "object" ? inner.type : "";
+    if (typeof type === "string" && type.endsWith("-null")) blanks.push(column);
+  });
+  return blanks;
+}
+
+function insertValueMatches(input: InsertCommit): boolean {
+  const root = insertColumnRoot(input.column);
+  if (!root) return false;
+  const setter = insertSetter(root);
+  const value = setter?.memoizedProps.value;
+  if (input.kind === "static") {
+    const payload = staticInsertPayload(root, input.text);
+    return JSON.stringify(value) === JSON.stringify(payload);
+  }
+  if (input.kind === "control") {
+    const picker = insertControlPicker(root);
+    if (!picker) return false;
+    const leaf = findControlLeaf(picker.memoizedProps.pageSummaries, input.control);
+    if (!leaf) return false;
+    const selected = picker.memoizedProps.selected;
+    if (Array.isArray(selected) && selected.includes(leaf.id)) return true;
+    return insertSectionText(input.column).includes(leaf.name);
+  }
+  return insertSectionText(input.column).includes(input.formula);
+}
+
+function insertSectionText(column: string): string {
+  const label = [...document.querySelectorAll("*")].find((el) => ownText(el) === column);
+  let node = label?.parentElement ?? null;
+  let section: Element | null = null;
+  while (node) {
+    const text = node.textContent || "";
+    if (text.includes(column) && text.length < 1500) section = node;
+    if (text.length > 1500) break;
+    node = node.parentElement;
+  }
+  return (section?.textContent || "").replace(/\s+/g, " ");
+}
+
+function staticInsertPayload(root: InsertFiber, text: string): { type: "const"; value: unknown } | null {
+  const typed = columnValueType(root);
+  if (typed.startsWith("date")) {
+    const epoch = Date.parse(`${text}T00:00:00.000Z`);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(text) || Number.isNaN(epoch)) return null;
+    return { type: "const", value: { type: "date", value: { type: "fixed", date: epoch } } };
+  }
+  if (typed.startsWith("number")) {
+    const parsed = Number(text);
+    if (!Number.isFinite(parsed)) return null;
+    return { type: "const", value: { type: "number", value: parsed } };
+  }
+  if (typed.startsWith("boolean")) {
+    if (text !== "true" && text !== "false") return null;
+    return { type: "const", value: { type: "boolean", value: text === "true" } };
+  }
+  return { type: "const", value: { type: "text", value: text } };
+}
+
+function emptyInsertPayload(root: InsertFiber): { type: "const"; value: { type: string } } {
+  const typed = columnValueType(root);
+  const type = typed.endsWith("-null") ? typed : `${typed || "text"}-null`;
+  return { type: "const", value: { type } };
+}
+
+function columnValueType(root: InsertFiber): string {
+  const typed = findInsertFiber(root, (node) => {
+    const type = node.memoizedProps?.valueRestrictions?.defaultValue?.type;
+    return typeof type === "string";
+  });
+  return typed?.memoizedProps.valueRestrictions.defaultValue.type || "text-null";
+}
+
+type InsertFiber = {
+  child: InsertFiber | null;
+  sibling: InsertFiber | null;
+  return: InsertFiber | null;
+  stateNode: unknown;
+  memoizedProps: any;
+};
+
+function insertColumnRoot(column: string): InsertFiber | null {
+  const labels = [...document.querySelectorAll("*")].filter((el) => ownText(el) === column);
+  for (const label of labels) {
+    let fiber = reactFiber(label);
+    for (let i = 0; fiber && i < 50; i++, fiber = fiber.return) {
+      if (fiber.memoizedProps?.label === column && insertSetter(fiber)) return fiber;
+    }
+  }
+  return null;
+}
+
+function eachInsertColumn(visit: (column: string, root: InsertFiber) => void): void {
+  const seen = new Set<string>();
+  for (const el of document.querySelectorAll("*")) {
+    const text = ownText(el);
+    if (!text || seen.has(text) || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(text)) continue;
+    const root = insertColumnRoot(text);
+    if (!root) continue;
+    seen.add(text);
+    visit(text, root);
+  }
+}
+
+function insertSetter(root: InsertFiber): InsertFiber | null {
+  return findInsertFiber(
+    root,
+    (node) => typeof node.memoizedProps?.setValue === "function" && typeof node.memoizedProps?.columnId === "string",
+  );
+}
+
+function insertControlPicker(root: InsertFiber): InsertFiber | null {
+  return findInsertFiber(
+    root,
+    (node) => typeof node.memoizedProps?.onSelect === "function" && Array.isArray(node.memoizedProps?.pageSummaries),
+  );
+}
+
+function insertKindSelect(root: InsertFiber): HTMLSelectElement | null {
+  const column = root.memoizedProps?.label;
+  if (typeof column !== "string") return null;
+  const label = [...document.querySelectorAll("*")].find((el) => ownText(el) === column);
+  let node = label?.parentElement ?? null;
+  let section: Element | null = null;
+  while (node) {
+    const text = node.textContent || "";
+    if (text.includes(column) && text.includes("Formula") && text.length < 900) section = node;
+    if (text.length > 900) break;
+    node = node.parentElement;
+  }
+  const select = section?.querySelector("select");
+  return select instanceof HTMLSelectElement ? select : null;
+}
+
+function findControlLeaf(pages: unknown, handle: string): { id: string; name: string } | null {
+  const stack = Array.isArray(pages) ? [...pages] : [];
+  while (stack.length > 0) {
+    const node = stack.pop();
+    if (!node || typeof node !== "object") continue;
+    const record = node as { id?: unknown; name?: unknown; secondaryName?: unknown; children?: unknown };
+    if (record.secondaryName === handle && typeof record.id === "string") {
+      return { id: record.id, name: typeof record.name === "string" ? record.name : handle };
+    }
+    if (Array.isArray(record.children)) stack.push(...record.children);
+  }
+  return null;
+}
+
+function findInsertFiber(root: InsertFiber | null, pred: (node: InsertFiber) => boolean, depth = 0): InsertFiber | null {
+  if (!root || depth > 28) return null;
+  if (pred(root)) return root;
+  let child = root.child;
+  while (child) {
+    const found = findInsertFiber(child, pred, depth + 1);
+    if (found) return found;
+    child = child.sibling;
+  }
+  return null;
+}
+
+function setNativeSelect(select: HTMLSelectElement, value: string): void {
+  const tracked = select as HTMLSelectElement & { _valueTracker?: { setValue: (next: string) => void } };
+  tracked._valueTracker?.setValue(select.value === value ? "" : select.value);
+  Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")?.set?.call(select, value);
+  select.dispatchEvent(new Event("input", { bubbles: true }));
+  select.dispatchEvent(new Event("change", { bubbles: true }));
+}
+
+function reactFiber(el: Element): InsertFiber | null {
+  const key = Object.keys(el).find((name) => name.startsWith("__reactFiber"));
+  return key ? (el as unknown as Record<string, InsertFiber>)[key] ?? null : null;
+}
+
+function ownText(el: Element): string {
+  return [...el.childNodes]
+    .filter((node) => node.nodeType === 3)
+    .map((node) => node.textContent || "")
+    .join("")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function stuckInsertColumns(wanted: string[]): string[] {
+  const keep = new Set(wanted);
+  const stuck: string[] = [];
+  eachInsertColumn((column, root) => {
+    if (keep.has(column)) return;
+    const setter = insertSetter(root);
+    const value = setter?.memoizedProps.value;
+    const inner = value?.type === "const" ? value.value : null;
+    const type = inner && typeof inner === "object" ? inner.type : "";
+    if (typeof type === "string" && type.endsWith("-null")) return;
+    stuck.push(column);
+  });
+  return stuck;
+}
+
+  if (request.op === "commit" && request.commit) return commitInsertValue(request.commit);
+  if (request.op === "match" && request.commit) return insertValueMatches(request.commit);
+  if (request.op === "clear") return clearOtherInsertColumns(request.wanted ?? []);
+  if (request.op === "stuck") return stuckInsertColumns(request.wanted ?? []);
+  return blankInsertColumnNames(request.wanted ?? []);
+}
+
+async function writeRowField(page: Page, row: Locator, value: string): Promise<void> {
+  const field = row.locator("input, textarea, [contenteditable='true'], .cm-content").last();
   try {
-    await dialog.getByText(column, { exact: true }).first().waitFor({ state: "visible", timeout: 5000 });
+    await field.waitFor({ state: "visible", timeout: 3000 });
   } catch {
-    fail(`Insert row did not target column ${JSON.stringify(column)}.`);
+    fail(`Insert row has no field for ${JSON.stringify(value)}.`);
   }
-  const handle = controlTitle.replace(/^[cv]\./, "");
-  if (!(await chipShows(dialog, controlTitle)) && !(await chipShows(dialog, handle))) {
-    const row = columnRow(dialog, column);
-    await chooseRowOption(page, row, ["Control"]);
-    await chooseRowOption(page, row, [controlTitle, handle]);
+  await field.click();
+  await page.keyboard.press("Meta+A");
+  await page.keyboard.insertText(value);
+  await page.keyboard.press("Tab");
+}
+
+async function insertValueShown(dialog: Locator, value: InsertValue): Promise<boolean> {
+  if (value.kind === "control") {
+    const handle = value.control.replace(/^[cv]\./, "");
+    return (await chipShows(dialog, value.control)) || (await chipShows(dialog, handle));
   }
-  if (!(await chipShows(dialog, column))) fail(`Insert row did not target column ${JSON.stringify(column)}.`);
-  if (!(await chipShows(dialog, controlTitle)) && !(await chipShows(dialog, handle))) {
-    fail(`Insert row did not take its value from ${JSON.stringify(controlTitle)}.`);
+  const wanted = value.kind === "static" ? value.value : value.formula;
+  const row = columnRow(dialog, value.column);
+  const text = ((await row.innerText()) || "").replace(/\s+/g, " ");
+  if (text.includes(wanted)) return true;
+  const fields = row.locator("input, textarea");
+  const count = await fields.count();
+  for (let i = 0; i < count; i++) {
+    const current = await fields.nth(i).inputValue().catch(() => "");
+    if (current.includes(wanted)) return true;
   }
-  const close = dialog.getByRole("button", { name: "Close", exact: true });
-  if ((await close.count()) > 0) await close.first().click();
-  else await page.getByRole("button", { name: "Close", exact: true }).last().click();
-  try {
-    await heading.waitFor({ state: "hidden", timeout: 5000 });
-  } catch {
-    fail("Insert row dialog did not close.");
-  }
+  return false;
+}
+
+function insertMiss(value: InsertValue): string {
+  if (value.kind === "control") return `Insert row did not take its value from ${JSON.stringify(value.control)}.`;
+  if (value.kind === "static") return `Insert row did not set ${JSON.stringify(value.column)} to ${JSON.stringify(value.value)}.`;
+  return `Insert row did not set ${JSON.stringify(value.column)} from ${JSON.stringify(value.formula)}.`;
 }
 
 function headingPattern(effect: string): RegExp {
@@ -1492,9 +2019,22 @@ async function clickPlainText(page: Page, label: string): Promise<void> {
 
 async function showCalculation(page: Page, title: string, column: string, formula: string): Promise<void> {
   const found = await locateTitle(page, title);
-  const before = await headerLabels(page, found.id);
+  const addColumn = page.getByRole("button", { name: /^add column/i });
+  const current = new URL(page.url());
+  const nodeId = current.searchParams.get(":nodeId") || current.searchParams.get("nodeId") || "";
+  if (nodeId !== found.id) {
+    current.search = `:${new URLSearchParams({ nodeId: found.id }).toString()}`;
+    await page.goto(current.toString(), { waitUntil: "domcontentloaded" });
+  }
+  await page.locator('[data-testid^="sheet-column-item-"]').first().waitFor({ state: "visible", timeout: 8000 });
+  const before = await page.evaluate(() =>
+    [...document.querySelectorAll('[data-testid^="sheet-column-item-"]')]
+      .map((node) => (node.textContent || "").replace(/Column menu/g, "").replace(/\s+/g, " ").trim())
+      .filter((value) => value.length > 0),
+  );
+  if (before.length === 0) fail("Column header was not found.");
   if (before.includes(column)) return;
-  await rightClickHeader(page, found.id);
+  await addColumn.first().click();
   await clickPlainText(page, "Add new column");
   const bar = page.locator(".cm-content").first();
   try {
@@ -1520,37 +2060,214 @@ async function showCalculation(page: Page, title: string, column: string, formul
   } catch {
     fail(`Column ${JSON.stringify(column)} was not added to ${JSON.stringify(title)}.`);
   }
-  const after = await headerLabels(page, found.id);
+  const after = await page.evaluate(() =>
+    [...document.querySelectorAll('[data-testid^="sheet-column-item-"]')]
+      .map((node) => (node.textContent || "").replace(/Column menu/g, "").replace(/\s+/g, " ").trim())
+      .filter((value) => value.length > 0),
+  );
   const created = after.find((label) => !before.includes(label));
   if (!created) fail(`Column ${JSON.stringify(column)} was not added to ${JSON.stringify(title)}.`);
   if (created === column) return;
-  await rightClickHeader(page, found.id, created);
-  await clickPlainText(page, "Rename column");
-  const field = page.getByRole("textbox", { name: created, exact: true });
-  await field.fill(column);
-  await field.press("Enter");
+  await renameColumnItem(page, created, column);
+}
+
+async function renameExistingColumn(page: Page, title: string, current: string, wanted: string): Promise<void> {
+  const found = await locateTitle(page, title);
+  const labels = await headerLabels(page, found.id);
+  if (labels.includes(wanted)) return;
+  if (!labels.includes(current)) fail(`Column ${JSON.stringify(current)} was not found on ${JSON.stringify(title)}.`);
+  await renameColumnItem(page, current, wanted);
+}
+
+async function canvasTitleListed(page: Page, title: string): Promise<boolean> {
+  return page.evaluate((wanted) => {
+    return [...document.querySelectorAll('[data-testid="dynamic-title"]')].some(
+      (node) => (node.textContent || "").trim() === wanted,
+    );
+  }, title);
+}
+
+async function titleStillPresent(page: Page, title: string): Promise<boolean> {
+  try {
+    await locateTitle(page, title);
+    return true;
+  } catch (error) {
+    if (error instanceof Exit && error.message.includes("was not found")) return false;
+    throw error;
+  }
+}
+
+async function leaveTitleEdit(page: Page, id: string, title: string): Promise<void> {
+  const editing = await page.evaluate((elementId) => {
+    const active = document.activeElement;
+    if (!(active instanceof HTMLElement)) return false;
+    const editable =
+      active.getAttribute("contenteditable") !== null || active.tagName === "INPUT" || active.tagName === "TEXTAREA";
+    if (!editable) return false;
+    const host = active.closest(
+      `[data-selectable="${elementId}"], [data-testid="element_${elementId}"], [data-testid="element-${elementId}"]`,
+    );
+    return host instanceof HTMLElement;
+  }, id);
+  if (!editing) return;
+  await page.keyboard.press("Escape");
+  await selectElement(page, id, title);
+  await confirmSelected(page, id, title);
+}
+
+async function confirmElementDelete(page: Page, title: string): Promise<void> {
+  const dialog = page.getByRole("alertdialog").or(page.getByRole("dialog"));
+  const started = Date.now();
+  while (Date.now() - started < 2500) {
+    const count = await dialog.count();
+    for (let i = count - 1; i >= 0; i--) {
+      const surface = dialog.nth(i);
+      if (!(await surface.isVisible().catch(() => false))) continue;
+      const text = ((await surface.innerText().catch(() => "")) || "").toLowerCase();
+      if (!text.includes("delete")) continue;
+      const confirm = surface.getByRole("button", { name: /^(delete( element)?|confirm|yes|remove|ok)$/i });
+      if ((await confirm.count()) < 1) continue;
+      const button = confirm.first();
+      if (!(await button.isVisible().catch(() => false))) continue;
+      await button.click();
+      return;
+    }
+    if (!(await canvasTitleListed(page, title))) return;
+    await page.waitForTimeout(100);
+  }
+}
+
+async function pressElementDelete(page: Page, title: string, key: "Delete" | "Backspace"): Promise<void> {
+  await page.keyboard.press(key);
+  await confirmElementDelete(page, title);
+  const started = Date.now();
+  while (Date.now() - started < 2000) {
+    if (!(await canvasTitleListed(page, title))) return;
+    await page.waitForTimeout(100);
+  }
+}
+
+/** Selects the element and deletes it with Delete, then Backspace. Confirms when Sigma asks. */
+async function deleteExistingElement(page: Page, title: string): Promise<void> {
+  let found: { id: string };
+  try {
+    found = await locateTitle(page, title);
+  } catch (error) {
+    if (error instanceof Exit && error.message.includes("was not found")) return;
+    throw error;
+  }
+  const onDialog = (dialog: { accept: () => Promise<void> }) => {
+    void dialog.accept();
+  };
+  page.on("dialog", onDialog);
+  try {
+    for (const key of ["Delete", "Backspace"] as const) {
+      if (!(await titleStillPresent(page, title))) break;
+      await selectElement(page, found.id, title);
+      await confirmSelected(page, found.id, title);
+      await leaveTitleEdit(page, found.id, title);
+      await pressElementDelete(page, title, key);
+    }
+  } finally {
+    page.off("dialog", onDialog);
+  }
+  if (await titleStillPresent(page, title)) fail(`Element ${JSON.stringify(title)} was not deleted.`);
+}
+
+async function deleteExistingColumn(page: Page, title: string, column: string): Promise<void> {
+  const found = await locateTitle(page, title);
+  const labels = await headerLabels(page, found.id);
+  if (!labels.includes(column)) return;
+  await deleteColumnItem(page, column);
+}
+
+async function columnHeaderListed(page: Page, column: string): Promise<boolean> {
+  return page.evaluate(
+    (name) =>
+      [...document.querySelectorAll('[data-testid^="sheet-column-item-"]')].some(
+        (node) => (node.textContent || "").replace(/Column menu/g, "").replace(/\s+/g, " ").trim() === name,
+      ),
+    column,
+  );
+}
+
+async function confirmColumnDelete(page: Page, column: string): Promise<void> {
+  const dialog = page.getByRole("alertdialog").or(page.getByRole("dialog"));
+  const started = Date.now();
+  while (Date.now() - started < 2500) {
+    if (!(await columnHeaderListed(page, column))) return;
+    const count = await dialog.count();
+    for (let i = count - 1; i >= 0; i--) {
+      const surface = dialog.nth(i);
+      if (!(await surface.isVisible().catch(() => false))) continue;
+      const text = ((await surface.innerText().catch(() => "")) || "").toLowerCase();
+      if (!text.includes("delete")) continue;
+      const confirm = surface.getByRole("button", { name: /^(delete( column)?|confirm|yes|remove|ok)$/i });
+      if ((await confirm.count()) < 1) continue;
+      const button = confirm.first();
+      if (!(await button.isVisible().catch(() => false))) continue;
+      await button.click();
+      return;
+    }
+    await page.waitForTimeout(100);
+  }
+}
+
+async function deleteColumnItem(page: Page, column: string): Promise<void> {
+  const item = page.locator('[data-testid^="sheet-column-item-"]').filter({
+    has: page.getByText(column, { exact: true }),
+  }).first();
+  await item.click();
+  await item.locator('button[aria-label="Column menu"]').click({ force: true });
+  const action = page.getByText("Delete column", { exact: true });
+  try {
+    await action.first().waitFor({ state: "visible", timeout: 5000 });
+  } catch {
+    fail(`Column menu did not include "Delete column".`);
+  }
+  const onDialog = (dialog: { accept: () => Promise<void> }) => {
+    void dialog.accept();
+  };
+  page.on("dialog", onDialog);
+  try {
+    await action.first().click();
+    await confirmColumnDelete(page, column);
+  } finally {
+    page.off("dialog", onDialog);
+  }
   try {
     await page.waitForFunction(
       (name) =>
-        [...document.querySelectorAll('[data-testid^="sheet-column-item-"]')].some(
+        ![...document.querySelectorAll('[data-testid^="sheet-column-item-"]')].some(
           (node) => (node.textContent || "").replace(/Column menu/g, "").replace(/\s+/g, " ").trim() === name,
         ),
       column,
       { timeout: 5000 },
     );
   } catch {
-    fail(`Column is not ${JSON.stringify(column)}.`);
+    fail(`Column ${JSON.stringify(column)} was not deleted.`);
   }
 }
 
 async function renameColumnItem(page: Page, current: string, wanted: string): Promise<void> {
-  const item = page.locator('[data-testid^="sheet-column-item-"]').filter({ hasText: current }).first();
+  const item = page.locator('[data-testid^="sheet-column-item-"]').filter({
+    has: page.getByText(current, { exact: true }),
+  }).first();
   await item.click();
   await item.locator('button[aria-label="Column menu"]').click({ force: true });
   await page.getByText("Rename column", { exact: true }).click();
-  const field = page.getByRole("textbox", { name: current, exact: true });
-  await field.fill(wanted);
-  await field.press("Enter");
+  await page.waitForFunction(
+    (name) => [...document.querySelectorAll("input")].some((el) => el.value === name),
+    current,
+  );
+  await page.evaluate((name) => {
+    const input = [...document.querySelectorAll("input")].find((el) => (el as HTMLInputElement).value === name);
+    if (!(input instanceof HTMLInputElement)) return;
+    input.focus();
+    input.select();
+  }, current);
+  await page.keyboard.insertText(wanted);
+  await page.keyboard.press("Enter");
   try {
     await page.waitForFunction(
       (name) =>
@@ -1606,6 +2323,27 @@ async function fillChoiceDialog(page: Page, dialog: Locator, column: string, opt
   else await page.keyboard.press("Enter");
 }
 
+async function clickNamedTile(page: Page, label: string): Promise<void> {
+  const point = await page.evaluate((wanted) => {
+    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+    let node: Node | null;
+    while ((node = walker.nextNode())) {
+      if ((node.textContent || "").trim() !== wanted) continue;
+      let el = node.parentElement;
+      for (let depth = 0; depth < 4 && el; depth++) {
+        const rect = el.getBoundingClientRect();
+        if (rect.width >= 48 && rect.width <= 96 && rect.height >= 56 && rect.height <= 96) {
+          return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
+        }
+        el = el.parentElement;
+      }
+    }
+    return null;
+  }, label);
+  if (!point) fail(`Control tile ${JSON.stringify(label)} was not found.`);
+  await page.mouse.click(point.x, point.y);
+}
+
 async function clickControlTile(page: Page, label: string): Promise<void> {
   const point = await page.evaluate((wanted) => {
     const tiles = [...document.querySelectorAll("div, button")].filter((node) => {
@@ -1620,7 +2358,10 @@ async function clickControlTile(page: Page, label: string): Promise<void> {
     const rect = tile.getBoundingClientRect();
     return { x: Math.round(rect.x + rect.width / 2), y: Math.round(rect.y + rect.height / 2) };
   }, label);
-  if (!point) fail(`Control tile ${JSON.stringify(label)} was not found.`);
+  if (!point) {
+    await clickNamedTile(page, label);
+    return;
+  }
   await page.mouse.click(point.x, point.y);
 }
 
@@ -1642,6 +2383,10 @@ async function nameControl(page: Page, id: string, title: string): Promise<void>
   }
   await field.first().fill(title);
   await field.first().press("Enter");
+  await writeCanvasTitle(page, id, title);
+}
+
+async function writeCanvasTitle(page: Page, id: string, title: string): Promise<void> {
   const writeTitle = async () => {
     const editable = page.locator(`[data-testid="element_${id}"] [data-testid="dynamic-title"] [contenteditable="true"]`).first();
     const titleNode = page.locator(`[data-testid="element_${id}"] [data-testid="dynamic-title"]`).first();
@@ -1668,60 +2413,136 @@ async function nameControl(page: Page, id: string, title: string): Promise<void>
       { timeout: 5000 },
     );
   } catch {
-    fail(`Title is not ${JSON.stringify(title)}.`);
+    const seen = await page.evaluate((elementId) => {
+      const node = document.querySelector(`[data-testid="element_${elementId}"] [data-testid="dynamic-title"]`);
+      return (node?.textContent || "").trim();
+    }, id);
+    fail(`Title is ${JSON.stringify(seen)}, expected ${JSON.stringify(title)}.`);
   }
+}
+
+async function labeledFieldButton(page: Page, label: string) {
+  const handle = await page.evaluateHandle((wanted) => {
+    const labels = [...document.querySelectorAll("*")].filter((el) => {
+      const own = [...el.childNodes]
+        .filter((node) => node.nodeType === Node.TEXT_NODE)
+        .map((node) => node.textContent || "")
+        .join("")
+        .replace(/\s+/g, " ")
+        .trim();
+      return own === wanted;
+    });
+    for (const marked of labels) {
+      const field = marked.closest("[data-phi-field='true']") || marked.parentElement;
+      const buttons = [...(field?.querySelectorAll("button") ?? [])].filter((button) => {
+        return button instanceof HTMLElement && button.getBoundingClientRect().width >= 80;
+      });
+      if (buttons[0] instanceof HTMLElement) return buttons[0];
+    }
+    return null;
+  }, label);
+  return handle.asElement();
 }
 
 async function chooseNamedValue(page: Page, label: string, value: string): Promise<void> {
   const pattern = new RegExp(label, "i");
   const box = page.getByRole("combobox", { name: pattern });
   const button = page.getByRole("button", { name: pattern });
-  const control = (await box.count()) > 0 ? box.first() : (await button.count()) > 0 ? button.first() : null;
+  const named = (await box.count()) > 0 ? box.first() : (await button.count()) > 0 ? button.first() : null;
+  const control = named ?? (await labeledFieldButton(page, label));
   if (!control) fail(`${label} was not found.`);
   const current = ((await control.innerText()) || "").replace(/\s+/g, " ").trim();
   if (current === value) return;
-  await control.click();
-  const option = page.getByRole("option", { name: value, exact: true });
-  try {
-    await option.first().waitFor({ state: "visible", timeout: 5000 });
-  } catch {
-    fail(`${label} did not offer ${JSON.stringify(value)}.`);
+  const opener = await control.boundingBox();
+  if (!opener) fail(`${label} was not found.`);
+  await page.mouse.click(opener.x + opener.width / 2, opener.y + opener.height / 2);
+  const dialog = page.getByRole("dialog").last();
+  const search = dialog.locator("input").first();
+  const searchable = await search
+    .waitFor({ state: "visible", timeout: 1500 })
+    .then(() => true)
+    .catch(() => false);
+  if (searchable) {
+    await search.fill(value);
+    const row = dialog.getByText(value, { exact: true }).last();
+    try {
+      await row.waitFor({ state: "visible", timeout: 5000 });
+    } catch {
+      fail(`${label} did not offer ${JSON.stringify(value)}.`);
+    }
+    const box = await row.boundingBox();
+    if (!box) fail(`${label} did not offer ${JSON.stringify(value)}.`);
+    await page.mouse.click(box.x + Math.min(12, box.width / 2), box.y + box.height / 2);
+  } else {
+    const option = page.getByRole("option", { name: value, exact: true });
+    try {
+      await option.first().waitFor({ state: "visible", timeout: 5000 });
+    } catch {
+      fail(`${label} did not offer ${JSON.stringify(value)}.`);
+    }
+    await option.first().click();
   }
-  await option.first().click();
   try {
-    await control.filter({ hasText: value }).waitFor({ state: "visible", timeout: 3000 });
+    await page.waitForFunction(
+      ({ wanted, fieldLabel }) => {
+        const ownText = (el: Element) =>
+          [...el.childNodes]
+            .filter((node) => node.nodeType === Node.TEXT_NODE)
+            .map((node) => node.textContent || "")
+            .join("")
+            .replace(/\s+/g, " ")
+            .trim();
+        const labels = [...document.querySelectorAll("*")].filter((el) => ownText(el) === fieldLabel);
+        for (const marked of labels) {
+          const field = marked.closest("[data-phi-field='true']") || marked.parentElement;
+          const button = field?.querySelector("button, [role='combobox']");
+          const text = (button?.textContent || "").replace(/\s+/g, " ").trim();
+          if (text === wanted) return true;
+        }
+        return false;
+      },
+      { wanted: value, fieldLabel: label },
+      { timeout: 3000 },
+    );
   } catch {
     const after = ((await control.innerText()) || "").replace(/\s+/g, " ").trim();
-    fail(`${label} is ${JSON.stringify(after)}, wanted ${JSON.stringify(value)}.`);
+    if (after !== value) fail(`${label} is ${JSON.stringify(after)}, wanted ${JSON.stringify(value)}.`);
   }
 }
 
 async function setPhiCheck(page: Page, label: string, wantOn: boolean): Promise<void> {
-  const box = await page.evaluateHandle((wanted) => {
+  const found = await page.evaluate((wanted) => {
+    const visible = (el: Element) => {
+      if (!(el instanceof HTMLElement)) return false;
+      const rect = el.getBoundingClientRect();
+      return rect.width > 0 && rect.height > 0;
+    };
+    document.querySelectorAll("[data-phi-target]").forEach((el) => el.removeAttribute("data-phi-target"));
     const labels = [...document.querySelectorAll("[data-phi-label='true']")].filter((node) => {
-      return (node.textContent || "").replace(/\s+/g, " ").trim() === wanted;
+      return (node.textContent || "").replace(/\s+/g, " ").trim() === wanted && visible(node);
     });
-    const marked = labels.find((node) => node instanceof HTMLElement && node.id.length > 0);
-    if (!(marked instanceof HTMLElement)) return null;
-    const owner = [...document.querySelectorAll("[aria-labelledby]")].find((node) =>
-      (node.getAttribute("aria-labelledby") || "").split(/\s+/).includes(marked.id),
-    );
-    const input = owner?.querySelector("input[type='checkbox']");
-    return input instanceof HTMLInputElement ? input : null;
+    const inputs: HTMLInputElement[] = [];
+    for (const marked of labels) {
+      if (!(marked instanceof HTMLElement) || marked.id.length === 0) continue;
+      const owner = [...document.querySelectorAll("[aria-labelledby]")].find((node) =>
+        (node.getAttribute("aria-labelledby") || "").split(/\s+/).includes(marked.id),
+      );
+      const input = owner?.querySelector("input[type='checkbox']");
+      if (input instanceof HTMLInputElement && visible(input)) inputs.push(input);
+    }
+    if (inputs.length !== 1) return inputs.length;
+    inputs[0]?.setAttribute("data-phi-target", "1");
+    return 1;
   }, label);
-  const element = box.asElement();
-  if (!element) {
-    await box.dispose();
-    fail(`${label} checkbox was not found.`);
-  }
+  if (found === 0) fail(`${label} checkbox was not found.`);
+  if (found !== 1) fail(`${label} matches ${found} checkboxes.`);
+  const element = page.locator("[data-phi-target='1']").first();
   const checked = await element.evaluate((node) => node instanceof HTMLInputElement && node.checked);
-  if (checked === wantOn) {
-    await element.dispose();
-    return;
-  }
-  await element.click();
+  if (checked === wantOn) return;
+  const tick = await element.boundingBox();
+  if (!tick || tick.width <= 0 || tick.height <= 0) fail(`${label} checkbox was not found.`);
+  await page.mouse.click(tick.x + tick.width / 2, tick.y + tick.height / 2);
   const after = await element.evaluate((node) => node instanceof HTMLInputElement && node.checked);
-  await element.dispose();
   if (after !== wantOn) fail(`${label} did not turn ${wantOn ? "on" : "off"}.`);
 }
 
@@ -1740,6 +2561,66 @@ async function createDateControl(page: Page, title: string): Promise<void> {
   await nameControl(page, id, title);
 }
 
+/** Properties → Value source and Source column. Does not write the control id or the canvas title. */
+async function applyListValueSource(page: Page, id: string, source: string, column: string): Promise<void> {
+  const host = page.locator(`[data-testid="element_${id}"]`).first();
+  await host.click({ force: true });
+  const properties = page.getByRole("tab", { name: "Properties", exact: true });
+  if ((await properties.count()) < 1) fail("Properties tab was not found.");
+  await properties.first().click();
+  await chooseNamedValue(page, "Value source", source);
+  await chooseNamedValue(page, "Source column", column);
+}
+
+/** Reads the control id. Does not fill the field or press Enter. */
+async function readControlId(page: Page, elementId: string): Promise<string> {
+  const host = page.locator(`[data-selectable="${elementId}"], [data-testid="element_${elementId}"]`).first();
+  if ((await host.count()) < 1) return "";
+  try {
+    await host.click({ force: true, timeout: 2000 });
+  } catch {
+    return "";
+  }
+  const settings = page.getByRole("tab", { name: "Settings", exact: true });
+  const properties = page.getByRole("tab", { name: "Properties", exact: true });
+  if ((await settings.count()) > 0) await settings.first().click();
+  else if ((await properties.count()) > 0) await properties.first().click();
+  else return "";
+  const named = page.getByRole("textbox", { name: /control id/i });
+  const placeholder = page.locator('input[placeholder="control-id"], input[placeholder="Control ID"]');
+  const field = (await named.count()) > 0 ? named.first() : (await placeholder.count()) > 0 ? placeholder.first() : null;
+  if (!field) return "";
+  if (!(await field.isVisible().catch(() => false))) return "";
+  return (await field.inputValue().catch(() => "")).trim();
+}
+
+/** Fallback lookup. Returns the element id whose control id already equals `controlId`. */
+async function findByControlId(page: Page, controlId: string): Promise<string | null> {
+  const ids = [...new Set(await selectableIds(page))];
+  const matches: string[] = [];
+  for (const id of ids) {
+    const value = await readControlId(page, id);
+    if (value === controlId) matches.push(id);
+  }
+  if (matches.length > 1) {
+    fail(`Control id ${JSON.stringify(controlId)} matches ${matches.length} controls. Nothing was changed.`);
+  }
+  return matches[0] ?? null;
+}
+
+/** Updates Value source and Source column on a control that already exists. */
+async function setExistingListSource(page: Page, title: string, source: string, column: string): Promise<void> {
+  let canvasId: string | null = null;
+  try {
+    canvasId = (await locateTitle(page, title)).id;
+  } catch (error) {
+    if (!(error instanceof Exit) || !error.message.includes("was not found")) throw error;
+  }
+  const controlId = canvasId ? null : await findByControlId(page, title);
+  const id = resolveListControl(canvasId, controlId, title);
+  await applyListValueSource(page, id, source, column);
+}
+
 async function createListControl(
   page: Page,
   title: string,
@@ -1750,24 +2631,28 @@ async function createListControl(
   clear: "on" | "off",
   search: "on" | "off",
 ): Promise<void> {
+  let id: string | null = null;
   try {
-    await locateTitle(page, title);
-    return;
+    id = (await locateTitle(page, title)).id;
   } catch (error) {
     if (!(error instanceof Exit) || !error.message.includes("was not found")) throw error;
   }
-  const before = new Set(await selectableIds(page));
-  await clickExactButton(page, "Controls");
-  await page.waitForTimeout(300);
-  await clickControlTile(page, "List values");
-  const id = await createdId(page, before);
-  await nameControl(page, id, title);
-  await chooseNamedValue(page, "Value source", source);
-  await chooseNamedValue(page, "Source column", column);
+  if (!id) {
+    const before = new Set(await selectableIds(page));
+    await clickExactButton(page, "Controls");
+    await page.waitForTimeout(300);
+    await clickControlTile(page, "List values");
+    id = await createdId(page, before);
+  }
+  await applyListValueSource(page, id, source, column);
+  await setControlId(page, id, title);
+  const properties = page.getByRole("tab", { name: "Properties", exact: true });
+  await properties.first().click();
   await setPhiCheck(page, "Allow multiple selection", multiple === "on");
   await setPhiCheck(page, "Show null option", nullOption === "on");
   await setPhiCheck(page, "Show clear button", clear === "on");
   await setPhiCheck(page, "Show search box", search === "on");
+  await writeCanvasTitle(page, id, title);
 }
 
 async function createSegmentedControl(page: Page, title: string, options: string[]): Promise<void> {
@@ -2316,6 +3201,8 @@ async function intoFieldText(dialog: Locator): Promise<string> {
   if ((await combo.count()) > 0) return ((await combo.first().innerText()) || "").trim();
   const named = dialog.getByRole("button", { name: /^into\b/i });
   if ((await named.count()) > 0) return ((await named.first().innerText()) || "").trim();
+  const labeled = dialog.getByText(/\(Data\)$/).first();
+  if ((await labeled.count()) > 0) return ((await labeled.innerText()) || "").trim();
   return "";
 }
 
@@ -2333,6 +3220,11 @@ async function openIntoList(dialog: Locator): Promise<void> {
   const named = dialog.getByRole("button", { name: /^into$/i });
   if ((await named.count()) > 0) {
     await named.first().click();
+    return;
+  }
+  const current = dialog.getByText(/\(Data\)$/).first();
+  if ((await current.count()) > 0) {
+    await current.click();
     return;
   }
   fail("Insert row has no Into field.");
@@ -2357,7 +3249,7 @@ function sameTableLabel(shown: string, table: string, sheet: string): boolean {
   const value = shown.replace(/\s+/g, " ").trim();
   if (!intoShowsTable(value)) return false;
   const first = value.split("\n")[0]?.trim() ?? value;
-  if (first === table || value === table) return true;
+  if (first === table || value === table || first.startsWith(`${table} (`)) return true;
   if (!sheet) return false;
   return first === sheet || value === sheet || first.startsWith(`${sheet} (`);
 }
@@ -2366,6 +3258,12 @@ async function selectIntoTable(page: Page, dialog: Locator, table: string, eleme
   const sheet = await sheetLabel(page, elementId);
   if (sameTableLabel(await intoFieldText(dialog), table, sheet)) return;
   await openIntoList(dialog);
+  const plain = page.getByText(table, { exact: true });
+  if ((await plain.count()) > 0) {
+    await plain.last().click();
+    const shown = await intoFieldText(dialog);
+    if (sameTableLabel(shown, table, sheet) || shown.startsWith(table)) return;
+  }
   const list = page.getByRole("listbox");
   const options = (await list.count()) > 0 ? list.last().getByRole("option") : page.getByRole("option");
   try {
