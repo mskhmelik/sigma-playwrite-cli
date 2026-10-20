@@ -293,7 +293,8 @@ async function renameTitle(page: Page, id: string, title: string): Promise<void>
     fail(`Element ${id} has no title to rename.`);
   }
   await page.keyboard.press("Meta+A");
-  await page.keyboard.insertText(title);
+  if (title === "") await page.keyboard.press("Backspace");
+  else await page.keyboard.insertText(title);
   await page.keyboard.press("Enter");
   await page.keyboard.press("Tab");
   try {
@@ -2705,7 +2706,7 @@ export async function writeControlId(page: Page, elementId: string, controlId: s
   const original = await readCanvasTitle(page, elementId);
   await setControlId(page, elementId, controlId);
   const after = await readCanvasTitle(page, elementId);
-  if (original !== "" && after !== original) await renameTitle(page, elementId, original);
+  if (after !== original) await renameTitle(page, elementId, original);
   const seenId = await readControlId(page, elementId);
   if (seenId !== controlId) fail(`Control id is not ${JSON.stringify(controlId)}.`);
   const seen = await readCanvasTitle(page, elementId);
@@ -3613,7 +3614,7 @@ async function ensureOn(page: Page, label: string): Promise<void> {
     const on =
       (await control.getAttribute("aria-checked")) === "true" ||
       (await control.getAttribute("aria-pressed")) === "true" ||
-      (await control.isChecked());
+      (role === "checkbox" && (await control.isChecked()));
     if (!on) await control.click();
     return;
   }
