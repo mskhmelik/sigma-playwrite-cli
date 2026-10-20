@@ -22,8 +22,9 @@ import {
   saveInsertRow,
   saveOnSelectControl,
   saveUpdateRow,
+  saveWhen,
 } from "./effects/build.js";
-import type { DrawerSettings, DrawerSize, DrawerToggle, Editor } from "./editor.js";
+import type { DrawerSettings, DrawerSize, DrawerToggle, Editor, WhenBranch, WhenEffect } from "./editor.js";
 import { fail } from "./errors.js";
 import { drawerTitle, requireControlKind, type HandleKind } from "./handles.js";
 import { parseInsertSets, type InsertAssignment } from "./insert-set.js";
@@ -138,6 +139,15 @@ export type CreateCommand =
       matchKind: HandleKind;
       matchHandle: string;
     }
+  | {
+      kind: "when";
+      url: string;
+      page?: string;
+      title: string;
+      controlKind: HandleKind;
+      handle: string;
+      branches: WhenBranch[];
+    }
   | { kind: "group-column"; url: string; page?: string; title: string; column: string; withColumn: string };
 
 function readFlags(args: string[]): Bag {
@@ -199,6 +209,50 @@ function allow(bag: Bag, names: string[]): void {
   for (const name of Object.keys(bag)) {
     if (!names.includes(name)) fail(`Unknown argument: --${name}`);
   }
+}
+
+function parseWhenEffect(value: string, rest: string): WhenEffect {
+  if (rest === "empty") return { kind: "empty" };
+  const colon = rest.indexOf(":");
+  const kind = colon < 0 ? rest : rest.slice(0, colon);
+  const target = colon < 0 ? "" : rest.slice(colon + 1).trim();
+  const shape = "value=navigate:Page, value=open-drawer:Name, or value=empty";
+  if (kind === "navigate") {
+    if (!target) fail(`set-action --branch must be ${shape}, not ${JSON.stringify(`${value}=${rest}`)}`);
+    return { kind: "navigate", destination: target };
+  }
+  if (kind === "open-drawer") {
+    if (!target) fail(`set-action --branch must be ${shape}, not ${JSON.stringify(`${value}=${rest}`)}`);
+    return { kind: "open-drawer", modal: target };
+  }
+  fail(`set-action --branch must be ${shape}, not ${JSON.stringify(`${value}=${rest}`)}`);
+}
+
+/** Group repeated --branch flags. The first time a value appears fixes its place in the chain. */
+export function parseWhenBranches(raw: string[]): WhenBranch[] {
+  if (raw.length === 0) fail("set-action requires --branch");
+  const branches: WhenBranch[] = [];
+  for (const item of raw) {
+    const eq = item.indexOf("=");
+    const value = eq < 0 ? "" : item.slice(0, eq).trim();
+    const rest = eq < 0 ? "" : item.slice(eq + 1).trim();
+    if (!value || !rest) {
+      fail(
+        `set-action --branch must be value=navigate:Page, value=open-drawer:Name, or value=empty, not ${JSON.stringify(item)}`,
+      );
+    }
+    const effect = parseWhenEffect(value, rest);
+    let branch = branches.find((item) => item.value === value);
+    if (!branch) {
+      branch = { value, effects: [] };
+      branches.push(branch);
+    }
+    if (effect.kind === "empty" ? branch.effects.length > 0 : branch.effects.some((item) => item.kind === "empty")) {
+      fail(`set-action --branch ${JSON.stringify(value)}=empty cannot include another effect`);
+    }
+    branch.effects.push(effect);
+  }
+  return branches;
 }
 
 export function parseCreate(command: string, args: string[]): CreateCommand {
@@ -469,8 +523,15 @@ export function parseCreate(command: string, args: string[]): CreateCommand {
       if (!modal) fail("set-action requires --modal");
       return { kind: "if-else", url, page, title, into, column, controlKind, handle, modal };
     }
+    if (effect === "when") {
+      allow(bag, ["url", "page", "title", "effect", "kind", "handle", "branch"]);
+      const controlKind = requireControlKind(one(bag, "kind"), "set-action");
+      const handle = one(bag, "handle");
+      if (!handle) fail("set-action requires --handle");
+      return { kind: "when", url, page, title, controlKind, handle, branches: parseWhenBranches(bag.branch ?? []) };
+    }
     allow(bag, ["url", "page", "title", "effect", "into", "column", "from-handle", "kind"]);
-    if (effect !== "insert-row") fail("set-action requires --effect insert-row, close-modal, or if-else");
+    if (effect !== "insert-row") fail("set-action requires --effect insert-row, close-modal, if-else, or when");
     const into = one(bag, "into");
     if (!into) fail("set-action requires --into");
     const column = one(bag, "column");
@@ -527,6 +588,8 @@ export async function applyCreate(editor: Editor, parsed: CreateCommand, mark: (
         parsed.handle,
         parsed.modal,
       );
+    } else if (parsed.kind === "when") {
+      await saveWhen(editor, parsed.title, parsed.controlKind, parsed.handle, parsed.branches);
     } else if (parsed.kind === "set-action") {
       await saveInsertAction(editor, parsed.title, parsed.into, parsed.column, parsed.controlKind, parsed.handle);
     } else if (parsed.kind === "insert-row") {

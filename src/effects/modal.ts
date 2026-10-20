@@ -1,7 +1,7 @@
 import type { Editor } from "../editor.js";
 
-const sentenceArea = { rowStart: 1, colStart: 1, rowEnd: 2, colEnd: 13 };
-const buttonArea = { rowStart: 2, colStart: 1, rowEnd: 3, colEnd: 13 };
+const sentenceArea = { rowStart: 1, colStart: 1, rowEnd: 3, colEnd: 13 };
+const buttonArea = { rowStart: 3, colStart: 1, rowEnd: 4, colEnd: 13 };
 
 export async function openModalPage(editor: Editor, page: string): Promise<void> {
   try {

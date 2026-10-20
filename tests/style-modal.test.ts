@@ -77,6 +77,6 @@ test("styleModal formats the page and stacks the sentence above the button", asy
     "styleModalPage:⛔️ Error",
     "ensureModalSentence:This name already exists!",
     "ensureModalButton:I will create a new name",
-    "stack:sentence-id:1-2:1-13:button-id:2-3:1-13",
+    "stack:sentence-id:1-3:1-13:button-id:3-4:1-13",
   ]);
 });

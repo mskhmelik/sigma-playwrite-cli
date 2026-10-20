@@ -769,3 +769,171 @@ test("an input-table column type other than text or date is rejected", () => {
     /column type must be text or date/,
   );
 });
+
+test("rename without --title or --element is rejected", () => {
+  const result = run(["rename", "--url", url, "--name", "Next"]);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /rename requires --title or --element/);
+  assert.doesNotMatch(result.stderr, /Unknown command/);
+});
+
+test("rename with both --title and --element is rejected", () => {
+  const result = run([
+    "rename",
+    "--url",
+    url,
+    "--title",
+    "Old",
+    "--element",
+    "element-id",
+    "--name",
+    "Next",
+  ]);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /not both/);
+  assert.doesNotMatch(result.stderr, /Unknown command/);
+});
+
+test("set-control-id without --id is rejected", () => {
+  const result = run(["set-control-id", "--url", url, "--element", "element-id"]);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /set-control-id requires --id/);
+  assert.doesNotMatch(result.stderr, /Unknown command/);
+});
+
+test("set-control-id without --element is rejected", () => {
+  const result = run(["set-control-id", "--url", url, "--id", "c.team_manager"]);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /set-control-id requires --element/);
+  assert.doesNotMatch(result.stderr, /Unknown command/);
+});
+
+test("set-list rejects --id", () => {
+  const result = run([
+    "set-list",
+    "--url",
+    url,
+    "--kind",
+    "c",
+    "--handle",
+    "team_manager",
+    "--source",
+    "People",
+    "--column",
+    "login",
+    "--id",
+    "c.team_manager",
+  ]);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /Unknown argument: --id/);
+  assert.doesNotMatch(result.stderr, /Unknown command/);
+});
+
+test("set-action when groups one chain and keeps an empty branch", () => {
+  const args = [
+    "--url",
+    url,
+    "--page",
+    "Error",
+    "--title",
+    "I will populate all fields",
+    "--effect",
+    "when",
+    "--kind",
+    "v",
+    "--handle",
+    "error_modal_source",
+    "--branch",
+    "Employees=navigate:Employees",
+    "--branch",
+    "Employees=open-drawer:d.employee",
+    "--branch",
+    "Organisation=empty",
+    "--branch",
+    "Campaign=empty",
+  ];
+  const parsed = parseCreate("set-action", args);
+  assert.deepEqual(parsed, {
+    kind: "when",
+    url,
+    page: "Error",
+    title: "I will populate all fields",
+    controlKind: "v",
+    handle: "error_modal_source",
+    branches: [
+      {
+        value: "Employees",
+        effects: [
+          { kind: "navigate", destination: "Employees" },
+          { kind: "open-drawer", modal: "d.employee" },
+        ],
+      },
+      { value: "Organisation", effects: [{ kind: "empty" }] },
+      { value: "Campaign", effects: [{ kind: "empty" }] },
+    ],
+  });
+});
+
+test("set-action when without --branch is rejected", () => {
+  const result = run([
+    "set-action",
+    "--url",
+    url,
+    "--title",
+    "I will populate all fields",
+    "--effect",
+    "when",
+    "--kind",
+    "v",
+    "--handle",
+    "error_modal_source",
+  ]);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /set-action requires --branch/);
+  assert.doesNotMatch(result.stderr, /Unknown command/);
+  assert.doesNotMatch(result.stderr, /Chrome is not listening/);
+});
+
+test("set-action when rejects a branch that is not a known effect", () => {
+  assert.throws(
+    () =>
+      parseCreate("set-action", [
+        "--url",
+        url,
+        "--title",
+        "I will populate all fields",
+        "--effect",
+        "when",
+        "--kind",
+        "v",
+        "--handle",
+        "error_modal_source",
+        "--branch",
+        "Employees=insert",
+      ]),
+    /value=navigate:Page, value=open-drawer:Name, or value=empty/,
+  );
+});
+
+test("set-action when rejects empty mixed with another effect", () => {
+  assert.throws(
+    () =>
+      parseCreate("set-action", [
+        "--url",
+        url,
+        "--title",
+        "I will populate all fields",
+        "--effect",
+        "when",
+        "--kind",
+        "v",
+        "--handle",
+        "error_modal_source",
+        "--branch",
+        "Organisation=empty",
+        "--branch",
+        "Organisation=navigate:Organisation",
+      ]),
+    /empty cannot include another effect/,
+  );
+});
