@@ -13,6 +13,7 @@ import { runDeleteElement } from "./delete-element.js";
 import { runRenameColumn } from "./rename-column.js";
 import { runSetColumn } from "./set-column.js";
 import { runSetList } from "./set-list.js";
+import { runSetControlId } from "./set-control-id.js";
 import { runApi } from "./sigma-api.js";
 
 const help = `sigma-playwrite-cli — select, size, and format Sigma workbook elements in logged-in Chrome
@@ -39,10 +40,12 @@ USAGE
   sigma-playwrite-cli add --url <workbook-url> [--page <page-name>] --type container --handle <name> --title <element> [--title <element>...]
   sigma-playwrite-cli add-csv --url <workbook-url> [--page <page-name>] --file <path.csv> --title <table title> --connection <connection name>
   sigma-playwrite-cli rename --url <workbook-url> [--page <page-name>] --title <current title> --name <new title>
+  sigma-playwrite-cli rename --url <workbook-url> [--page <page-name>] --element <element id> --name <new title>
   sigma-playwrite-cli rename-column --url <workbook-url> [--page <page-name>] --title <table> --column <header> --name <header>
   sigma-playwrite-cli delete-column --url <workbook-url> [--page <page-name>] --title <table> --column <header> [--column <header>...]
   sigma-playwrite-cli delete-element --url <workbook-url> [--page <page-name>] --title <element title>
   sigma-playwrite-cli set-list --url <workbook-url> [--page <page-name>] --kind c|v --handle <name> --source <table> --column <column>
+  sigma-playwrite-cli set-control-id --url <workbook-url> [--page <page-name>] --element <element id> --id <control id>
   sigma-playwrite-cli set-column --url <workbook-url> [--page <page-name>] --title <table title> --column <column name> [--column <column name>...] --set format=date
   sigma-playwrite-cli group-column --url <workbook-url> [--page <page-name>] --title <element> --column <column> --with <column already in the grouping>
   sigma-playwrite-cli add-column --url <workbook-url> [--page <page-name>] --title <element> --column <system column> [--column <system column>...]
@@ -52,6 +55,7 @@ USAGE
   sigma-playwrite-cli set-action --url <workbook-url> [--page <page-name>] --title <button> --effect insert-row --into <table> --set <column=control:c.name|static:text|formula:expr> [--set <column=...>]
   sigma-playwrite-cli set-action --url <workbook-url> [--page <page-name>] --title <button> --effect close-modal
   sigma-playwrite-cli set-action --url <workbook-url> [--page <page-name>] --title <button> --effect if-else --into <table> --column <column> --kind c|v --from-handle <name> --modal <page>
+  sigma-playwrite-cli set-action --url <workbook-url> [--page <page-name>] --title <button> --effect when --kind c|v --handle <name> --branch <value=navigate:Page|value=open-drawer:Name|value=empty> [--branch <value=...>]
   sigma-playwrite-cli set-action --url <workbook-url> [--page <page-name>] --title <element> --on-select <column> --effect set-control --kind c|v --handle <name> --from-column <column>
   sigma-playwrite-cli set-action --url <workbook-url> [--page <page-name>] --title <button> --effect update-row --into <table> --column <column> --kind c|v --from-handle <name> --match-kind c|v --match-handle <name>
   sigma-playwrite-cli publish --url <workbook-url>
@@ -115,7 +119,7 @@ action: column=control:c.name, column=static:text, or column=formula:expr. The
 same control may fill two columns. A second call edits the Insert row already
 on the button. Created by, Created at, Last updated by, Last updated at, ID,
 Row ID, id, and the renamed blame headers cannot be written. set-action if-else opens --modal when that column already contains
-the control, and otherwise inserts the row. set-action close-modal closes the
+the control, and otherwise inserts the row. set-action when writes one If / else-if chain. Repeat --branch in order. value=navigate:Page and value=open-drawer:Name for the same value stay on that branch. value=empty still creates the branch. set-action close-modal closes the
 modal that holds the button. set-action --on-select stores the clicked row:
 --from-column is written into v.<handle> or c.<handle>, replacing the previous
 value. A click that stores the row id uses v.id_<clicked column>_selected.
@@ -144,14 +148,14 @@ sets, named for the column it writes: c.status into status, c.name into name.
 The button writes it onto the row in v.id_<clicked column>_selected. Run add-column, then
 add control, then add button, then set-action. Publish once after that. style-modal formats --page as that error modal:
 extra-small width, no primary button, no secondary button, and no close icon.
---header is the title. --sentence is left aligned on 1-2:1-13. --button is on
-the next row, 2-3:1-13, filled Warning, stretched, and closes the modal.
+--header is the title. --sentence is left aligned on 1-3:1-13. --button is on
+the next row, 3-4:1-13, filled Warning, stretched, and closes the modal.
 style-modal does not add the if/else check. In the published view, type the
 name, press Enter, then click the button. publish is the only command that publishes.
 
 add-csv uploads a CSV as a table on Add element, Data, Table, CSV. --connection
 is required. The canvas title becomes --title, not the file name. rename changes
-one canvas title from --title to --name. rename-column changes one column header
+one canvas title from --title to --name. When two elements share a canvas title, pass --element instead of --title. rename changes only the canvas title. rename-column changes one column header
 on --title from --column to --name. A header that is already --name is left as
 it is. delete-column removes each --column from that table. Repeat --column once
 per header. A header that is already absent is left as it is, and the command
@@ -164,7 +168,7 @@ special-case approval columns. set-list sets Value source to --source and
 Source column to --column on the existing control c.<name> or v.<name>. It
 finds that canvas title first. A control id match is only the fallback, and
 that id is not written. set-list does not create a control or rewrite the
-canvas title. A missing control stops the command. set-column --set format=date
+canvas title. A missing control stops the command. set-control-id writes --id on that element and puts the canvas title back if saving the id changes it. set-list does not write the control id. set-column --set format=date
 shows each --column as a date, YYYY-MM-DD.
 
 Chrome must already be running with --remote-debugging-port=9333. Commands reuse
@@ -256,7 +260,8 @@ if (command === "api") {
   command === "set-column" ||
   command === "delete-column" ||
   command === "delete-element" ||
-  command === "set-list"
+  command === "set-list" ||
+  command === "set-control-id"
 ) {
   const run =
     command === "add-csv"
@@ -271,7 +276,9 @@ if (command === "api") {
               ? runDeleteElement
               : command === "set-list"
                 ? runSetList
-                : runSetColumn;
+                : command === "set-control-id"
+                  ? runSetControlId
+                  : runSetColumn;
   try {
     await run(argv.slice(1));
   } catch (error) {

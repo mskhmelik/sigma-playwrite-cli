@@ -3,18 +3,28 @@ import { pathSegmentFromUrl, withChrome } from "./chrome.js";
 import { locateTitle } from "./edit.js";
 import { fail } from "./errors.js";
 import { markOwned, type OwnedWorkbook } from "./ledger.js";
-import { ensureEditor } from "./place.js";
+import { elementHosts, ensureEditor } from "./place.js";
 import { findWorkbook } from "./sigma-api.js";
 
 type Bag = Record<string, string[]>;
 
-export type RenameCommand = {
+type RenameByTitle = {
   url: string;
   page?: string;
   title: string;
   name: string;
   unchanged: boolean;
 };
+
+type RenameByElement = {
+  url: string;
+  page?: string;
+  element: string;
+  name: string;
+  unchanged: false;
+};
+
+export type RenameCommand = RenameByTitle | RenameByElement;
 
 function readFlags(args: string[]): Bag {
   const bag: Bag = {};
@@ -45,14 +55,21 @@ function allow(bag: Bag, names: string[]): void {
 
 export function parseRename(args: string[]): RenameCommand {
   const bag = readFlags(args);
-  allow(bag, ["url", "page", "title", "name"]);
+  allow(bag, ["url", "page", "title", "name", "element"]);
   const url = one(bag, "url");
   if (!url) fail("rename requires --url");
   const page = one(bag, "page");
-  const title = one(bag, "title");
-  if (!title) fail("rename requires --title");
   const name = one(bag, "name");
   if (!name) fail("rename requires --name");
+  const title = one(bag, "title");
+  const elementRaw = one(bag, "element");
+  if (title !== undefined && elementRaw !== undefined) fail("rename accepts --title or --element, not both");
+  if (elementRaw !== undefined) {
+    const element = elementRaw.trim();
+    if (!element) fail("rename requires --element");
+    return { url, page, element, name, unchanged: false };
+  }
+  if (title === undefined) fail("rename requires --title or --element");
   return { url, page, title, name, unchanged: title === name };
 }
 
@@ -97,9 +114,14 @@ export async function runRename(args: string[]): Promise<void> {
   if (parsed.unchanged) return;
   await withChrome(parsed.url, async (page) => {
     await ensureEditor(page, parsed.url, parsed.page);
-    const component = await locateTitle(page, parsed.title);
-    await writeTitle(page, component.id, parsed.name);
-    const seen = await readCanvasTitle(page, component.id);
+    const id = "element" in parsed ? parsed.element : (await locateTitle(page, parsed.title)).id;
+    if ("element" in parsed) {
+      const host = page.locator(elementHosts(id).join(", ")).first();
+      if ((await host.count()) < 1) fail(`Element ${JSON.stringify(id)} was not found. Nothing was changed.`);
+      if ((await readCanvasTitle(page, id)) === parsed.name) return;
+    }
+    await writeTitle(page, id, parsed.name);
+    const seen = await readCanvasTitle(page, id);
     if (seen !== parsed.name) fail(`Title is ${JSON.stringify(seen)}, expected ${JSON.stringify(parsed.name)}.`);
     const segment = pathSegmentFromUrl(page.url());
     const identity: Omit<OwnedWorkbook, "markedAt"> = { ...findWorkbook(segment), pathSegment: segment };

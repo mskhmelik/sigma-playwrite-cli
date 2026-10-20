@@ -1,4 +1,4 @@
-import type { DrawerSettings, Editor } from "../editor.js";
+import type { DrawerSettings, Editor, WhenBranch } from "../editor.js";
 import { insertValues, type InsertAssignment } from "../insert-set.js";
 import { columnDeleteAction, columnTitle, refuseDeleteColumn, refuseInsertColumn } from "../system-columns.js";
 import { groupingLanded, planGrouping } from "../grouping.js";
@@ -445,4 +445,19 @@ export async function saveIfElse(
   }
   const control = controlTitle(kind, handle);
   await editor.setIfElse(button, table, column, control, modal, duplicateFormula(table, column, control));
+}
+
+export async function saveWhen(
+  editor: Editor,
+  button: string,
+  kind: HandleKind,
+  handle: string,
+  branches: WhenBranch[],
+): Promise<void> {
+  try {
+    await editor.findElement(button);
+  } catch {
+    throw new Error("missing title");
+  }
+  await editor.setWhen(button, controlTitle(kind, handle), branches);
 }

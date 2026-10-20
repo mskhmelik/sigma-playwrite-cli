@@ -18,6 +18,51 @@ test("rename without --title is rejected", () => {
   );
 });
 
+test("rename --element with --name parses and does not include title", () => {
+  const parsed = parseRename([
+    "--url",
+    url,
+    "--page",
+    "Data",
+    "--element",
+    "el-1",
+    "--name",
+    "Raw - Fact - Orders",
+  ]);
+  assert.deepEqual(parsed, {
+    url,
+    page: "Data",
+    element: "el-1",
+    name: "Raw - Fact - Orders",
+    unchanged: false,
+  });
+  assert.equal("title" in parsed, false);
+});
+
+test("rename rejects both --title and --element", () => {
+  assert.throws(
+    () =>
+      parseRename([
+        "--url",
+        url,
+        "--title",
+        "Raw - Fact - Sales",
+        "--element",
+        "el-1",
+        "--name",
+        "Raw - Fact - Orders",
+      ]),
+    /not both/,
+  );
+});
+
+test("rename --element without --name is rejected", () => {
+  assert.throws(
+    () => parseRename(["--url", url, "--element", "el-1"]),
+    /rename requires --name/,
+  );
+});
+
 test("equal title and name is unchanged", () => {
   const parsed = parseRename([
     "--url",

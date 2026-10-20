@@ -1,5 +1,5 @@
 import type { Locator, Page } from "playwright";
-import type { DrawerSettings, Editor, InsertValue } from "./editor.js";
+import type { DrawerSettings, Editor, InsertValue, WhenBranch, WhenEffect } from "./editor.js";
 import { Exit, fail } from "./errors.js";
 import { locateTitle } from "./edit.js";
 import { controlTitle, resolveListControl, type HandleKind } from "./handles.js";
@@ -169,6 +169,9 @@ export function workbookEditor(page: Page): Editor {
     },
     async setIfElse(button, table, column, controlTitle, modal, formula) {
       await saveButtonIfElse(page, button, table, column, controlTitle, modal, formula);
+    },
+    async setWhen(button, control, branches) {
+      await saveButtonWhen(page, button, control, branches);
     },
     async listColumns(title) {
       const found = await locateTitle(page, title);
@@ -858,7 +861,7 @@ async function setControlId(page: Page, elementId: string, title: string): Promi
         const inputs = [...document.querySelectorAll("input")];
         return inputs.some((node) => {
           const label = `${node.getAttribute("aria-label") || ""} ${node.getAttribute("placeholder") || ""}`;
-          return /control id/i.test(label) && node.value === wanted;
+          return /control[-\s]id\b/i.test(label) && node.value === wanted;
         });
       },
       title,
@@ -1638,7 +1641,7 @@ async function openEffect(page: Page, button: string, effect: string): Promise<{
   await page.getByRole("option", { name: effect, exact: true }).click();
   const heading = page.getByRole("heading", { name: headingPattern(effect) });
   await heading.waitFor({ state: "visible", timeout: 5000 });
-  const dialog = await insertRowDialog(page, heading);
+  const dialog = await actionSurface(page, heading);
   return { heading, dialog };
 }
 
@@ -1671,8 +1674,9 @@ async function saveButtonClose(page: Page, button: string): Promise<void> {
   await closeActionDialog(page, dialog, heading);
 }
 
-async function fillCondition(page: Page, dialog: Locator, formula: string): Promise<void> {
-  const field = dialog.locator("textarea, [contenteditable='true']").last();
+async function fillCondition(page: Page, dialog: Locator, formula: string, fieldIndex?: number): Promise<void> {
+  const fields = dialog.locator("textarea, [contenteditable='true']");
+  const field = fieldIndex === undefined ? fields.last() : fields.nth(fieldIndex);
   try {
     await field.waitFor({ state: "visible", timeout: 5000 });
   } catch {
@@ -1696,8 +1700,15 @@ async function fillCondition(page: Page, dialog: Locator, formula: string): Prom
   }
 }
 
-async function chooseBranchEffect(page: Page, dialog: Locator, branch: string, effect: string): Promise<void> {
-  const row = dialog.getByText(branch, { exact: true }).first().locator("xpath=ancestor::*[.//button][1]");
+async function chooseBranchEffect(
+  page: Page,
+  dialog: Locator,
+  branch: string,
+  effect: string,
+  which: "first" | "last" = "first",
+): Promise<void> {
+  const label = dialog.getByText(branch, { exact: true });
+  const row = (which === "last" ? label.last() : label.first()).locator("xpath=ancestor::*[.//button][1]");
   const opened = await chooseRowOption(page, row, [effect]);
   if (!opened) {
     const option = page.getByRole("option", { name: effect, exact: true });
@@ -1743,6 +1754,101 @@ async function saveButtonIfElse(
     fail(`If/else did not take its value from ${JSON.stringify(control)}.`);
   }
   if (!((await dialog.innerText()) || "").includes(formula)) fail(`If/else condition is not ${JSON.stringify(formula)}.`);
+  await closeActionDialog(page, dialog, heading);
+}
+
+function whenFormula(control: string, value: string): string {
+  return `[${control}] = "${value}"`;
+}
+
+function effectName(effect: WhenEffect): string {
+  if (effect.kind === "navigate") return "Navigate in this workbook";
+  if (effect.kind === "open-drawer") return "Open modal/drawer";
+  return "";
+}
+
+function effectTarget(effect: WhenEffect): string {
+  if (effect.kind === "navigate") return effect.destination;
+  if (effect.kind === "open-drawer") return effect.modal;
+  return "";
+}
+
+async function pickEffectTarget(page: Page, dialog: Locator, target: string): Promise<void> {
+  const option = page.getByRole("option", { name: target, exact: true });
+  if ((await option.count()) > 0) {
+    await option.first().click();
+  } else if (!(await chooseRowOption(page, dialog, [target]))) {
+    fail(`If/else did not offer ${JSON.stringify(target)}.`);
+  }
+  if (!(await chipShows(dialog, target)) && !((await dialog.innerText()) || "").includes(target)) {
+    fail(`If/else did not select ${JSON.stringify(target)}.`);
+  }
+}
+
+async function applyBranchEffects(
+  page: Page,
+  dialog: Locator,
+  effects: WhenEffect[],
+  which: "first" | "last",
+): Promise<void> {
+  const real = effects.filter((effect) => effect.kind !== "empty");
+  for (let index = 0; index < real.length; index += 1) {
+    const effect = real[index];
+    if (!effect) continue;
+    const name = effectName(effect);
+    if (index === 0) {
+      await chooseBranchEffect(page, dialog, "Then", name, which);
+    } else {
+      const row = dialog.getByText("Then", { exact: true }).last().locator("xpath=ancestor::*[.//button][1]");
+      const add = row.getByRole("button", { name: "Add action", exact: true });
+      if ((await add.count()) < 1) fail("If/else Then has no Add action for another effect.");
+      await add.first().click();
+      const option = page.getByRole("option", { name: name, exact: true });
+      if ((await option.count()) < 1) fail(`If/else Then did not offer ${JSON.stringify(name)}.`);
+      await option.first().click();
+    }
+    await pickEffectTarget(page, dialog, effectTarget(effect));
+  }
+}
+
+async function fillWhenChain(page: Page, dialog: Locator, control: string, branches: WhenBranch[], index: number): Promise<void> {
+  const branch = branches[index];
+  if (!branch) return;
+  const fields = dialog.locator("textarea, [contenteditable='true']");
+  const fieldIndex = Math.max(0, (await fields.count()) - 1);
+  await fillCondition(page, dialog, whenFormula(control, branch.value), fieldIndex);
+  const which = index === 0 ? "first" : "last";
+  if (!branch.effects.some((effect) => effect.kind === "empty")) await applyBranchEffects(page, dialog, branch.effects, which);
+  const next = branches[index + 1];
+  if (!next) return;
+  const before = await dialog.locator("textarea, [contenteditable='true']").count();
+  await chooseBranchEffect(page, dialog, "Else", "If/else", "last");
+  try {
+    await page.waitForFunction(
+      (previous) => {
+        const node = [...document.querySelectorAll("[role='dialog']")].at(-1);
+        if (!node) return false;
+        return node.querySelectorAll("textarea, [contenteditable='true']").length > previous;
+      },
+      before,
+      { timeout: 5000 },
+    );
+  } catch {
+    fail("If/else did not add the next condition.");
+  }
+  await fillWhenChain(page, dialog, control, branches, index + 1);
+}
+
+async function saveButtonWhen(page: Page, button: string, control: string, branches: WhenBranch[]): Promise<void> {
+  const listed = await actionPanelText(page, button);
+  if (branches.every((branch) => listed.includes(whenFormula(control, branch.value)))) return;
+  const { heading, dialog } = await openEffect(page, button, "If/else");
+  await fillWhenChain(page, dialog, control, branches, 0);
+  const text = (await dialog.innerText()) || "";
+  for (const branch of branches) {
+    const formula = whenFormula(control, branch.value);
+    if (!text.includes(formula)) fail(`If/else condition is not ${JSON.stringify(formula)}.`);
+  }
   await closeActionDialog(page, dialog, heading);
 }
 
@@ -2594,6 +2700,18 @@ async function readControlId(page: Page, elementId: string): Promise<string> {
   return (await field.inputValue().catch(() => "")).trim();
 }
 
+/** Writes the control id. Restores the canvas title when that save changes it. */
+export async function writeControlId(page: Page, elementId: string, controlId: string): Promise<void> {
+  const original = await readCanvasTitle(page, elementId);
+  await setControlId(page, elementId, controlId);
+  const after = await readCanvasTitle(page, elementId);
+  if (original !== "" && after !== original) await renameTitle(page, elementId, original);
+  const seenId = await readControlId(page, elementId);
+  if (seenId !== controlId) fail(`Control id is not ${JSON.stringify(controlId)}.`);
+  const seen = await readCanvasTitle(page, elementId);
+  if (seen !== original) fail(`Title is ${JSON.stringify(seen)}, expected ${JSON.stringify(original)}.`);
+}
+
 /** Fallback lookup. Returns the element id whose control id already equals `controlId`. */
 async function findByControlId(page: Page, controlId: string): Promise<string | null> {
   const ids = [...new Set(await selectableIds(page))];
@@ -3365,6 +3483,7 @@ async function chooseRowOption(page: Page, row: Locator, names: string[]): Promi
 }
 
 const WARNING = "rgb(238, 138, 43)";
+const THEME_WARNING = "rgb(196, 78, 12)";
 
 async function existingId(page: Page, title: string): Promise<string | undefined> {
   try {
@@ -3396,36 +3515,39 @@ async function rightmost(locator: Locator, missing: string): Promise<Locator> {
 
 async function openPageFormat(page: Page): Promise<void> {
   await page.keyboard.press("Escape");
+  const selected = page.locator('[data-testid^="page-item-"][data-selected="true"], [data-testid^="page-item-"][aria-selected="true"]');
+  if ((await selected.count()) > 0) await selected.first().click();
   const tab = page.getByRole("tab", { name: /^format$/i });
   if ((await tab.count()) < 1) fail("Format tab was not found.");
   await tab.first().click();
 }
 
-async function chooseCombobox(page: Page, name: RegExp, value: string, label: string): Promise<void> {
-  const box = await rightmost(page.getByRole("combobox", { name }), `Combobox ${name} was not found.`);
-  const tag = await box.evaluate((el) => el.tagName.toLowerCase());
-  const current =
-    tag === "select" ? await box.inputValue() : ((await box.innerText()) || "").replace(/\s+/g, " ").trim();
-  if (current === value || current === label) return;
-  if (tag === "select") {
-    await box.selectOption(value);
+async function openDisclosure(page: Page, name: string): Promise<void> {
+  const named = page.getByRole("button", { name, exact: true });
+  if ((await named.count()) > 0) {
+    const button = await rightmost(named, `${name} disclosure was not found.`);
+    if ((await button.getAttribute("aria-expanded")) === "true") return;
+    await button.click();
     return;
   }
-  await box.click();
-  const byValue = page.locator(`[role="option"][data-value="${value}"]`);
-  if ((await byValue.count()) > 0) {
-    await byValue.first().click();
-    return;
-  }
-  const option = page.getByRole("option", { name: label, exact: true });
-  if ((await option.count()) < 1) fail(`Option ${label} was not found.`);
-  await option.first().click();
+  const opened = await page.evaluate((sectionName) => {
+    const wanted = sectionName.toLowerCase();
+    const match = [...document.querySelectorAll("button")].find((button) => {
+      if (!button.hasAttribute("data-collapsed")) return false;
+      const parent = (button.parentElement?.innerText || "").replace(/\s+/g, " ").trim().toLowerCase();
+      return parent.startsWith(wanted);
+    });
+    if (!(match instanceof HTMLButtonElement)) return "missing";
+    if (match.getAttribute("data-collapsed") === "true") match.click();
+    return "ok";
+  }, name);
+  if (opened !== "ok") fail(`${name} disclosure was not found.`);
 }
 
-async function openDisclosure(page: Page, name: string): Promise<void> {
-  const button = await rightmost(page.getByRole("button", { name, exact: true }), `${name} disclosure was not found.`);
-  if ((await button.getAttribute("aria-expanded")) === "true") return;
-  await button.click();
+async function clickRowSwitch(page: Page, label: string): Promise<void> {
+  const sw = page.locator(`[role="row"][aria-label="${label}"] [role="switch"]`);
+  if ((await sw.count()) < 1) fail(`${label} switch was not found.`);
+  await sw.first().click();
 }
 
 async function switchFor(page: Page, label: string): Promise<Locator> {
@@ -3439,6 +3561,25 @@ async function switchFor(page: Page, label: string): Promise<Locator> {
 }
 
 async function setSwitch(page: Page, label: string, wantOn: boolean): Promise<void> {
+  const named = page.getByRole("checkbox", { name: `Select ${label}`, exact: true });
+  if ((await named.count()) > 0) {
+    if ((await named.first().isChecked()) === wantOn) return;
+    await clickRowSwitch(page, label);
+    try {
+      await page.waitForFunction(
+        ({ name, want }) => {
+          const row = document.querySelector(`[role="row"][aria-label="${name}"]`);
+          const box = row?.querySelector("input[type='checkbox']");
+          return box instanceof HTMLInputElement && box.checked === want;
+        },
+        { name: label, want: wantOn },
+        { timeout: 3000 },
+      );
+    } catch {
+      fail(`${label} did not turn ${wantOn ? "on" : "off"}.`);
+    }
+    return;
+  }
   const sw = await switchFor(page, label);
   if (((await sw.getAttribute("aria-checked")) === "true") === wantOn) return;
   await sw.click();
@@ -3460,13 +3601,19 @@ async function setSwitch(page: Page, label: string, wantOn: boolean): Promise<vo
 }
 
 async function ensureOn(page: Page, label: string): Promise<void> {
+  const named = page.getByRole("checkbox", { name: `Select ${label}`, exact: true });
+  if ((await named.count()) > 0) {
+    if (!(await named.first().isChecked())) await clickRowSwitch(page, label);
+    return;
+  }
   for (const role of ["switch", "checkbox", "button"] as const) {
     const found = page.getByRole(role, { name: label, exact: true });
     if ((await found.count()) < 1) continue;
     const control = found.first();
     const on =
       (await control.getAttribute("aria-checked")) === "true" ||
-      (await control.getAttribute("aria-pressed")) === "true";
+      (await control.getAttribute("aria-pressed")) === "true" ||
+      (await control.isChecked());
     if (!on) await control.click();
     return;
   }
@@ -3519,10 +3666,158 @@ async function commitHeaderTitle(page: Page, header: string): Promise<void> {
   if (!result.ok) fail(`Header title is ${JSON.stringify(result.text)}, wanted ${JSON.stringify(header)}.`);
 }
 
+async function markModalSize(root: Locator, label: string): Promise<boolean> {
+  return root.evaluate((node, wanted) => {
+    node.querySelectorAll("[data-modal-size-target]").forEach((el) => el.removeAttribute("data-modal-size-target"));
+    const ownText = (el: Element) =>
+      [...el.childNodes]
+        .filter((child) => child.nodeType === Node.TEXT_NODE)
+        .map((child) => child.textContent || "")
+        .join("")
+        .replace(/\s+/g, " ")
+        .trim();
+    const visible = (el: Element) => {
+      if (!(el instanceof HTMLElement)) return false;
+      const rect = el.getBoundingClientRect();
+      return rect.width > 0 && rect.height > 0;
+    };
+    const sizeText = (el: Element) => (el.textContent || "").replace(/\s+/g, " ").trim();
+    const isSizeWord = (text: string) => /^(?:Extra small|Small|Medium|Large|Extra large)$/.test(text);
+    const labels = [...node.querySelectorAll("*")].filter((el) => ownText(el) === wanted && visible(el));
+    for (const marked of labels) {
+      let scope: HTMLElement | null = marked.parentElement;
+      for (let depth = 0; depth < 6 && scope; depth += 1) {
+        const labelBox = marked.getBoundingClientRect();
+        const aligned = (el: Element) => Math.abs(el.getBoundingClientRect().top - labelBox.top) < 28;
+        const buttons = [...scope.querySelectorAll("button, [role='button'], [role='combobox']")].filter((control) => {
+          if (!visible(control) || !aligned(control)) return false;
+          const labelled = (control.getAttribute("aria-label") || "").replace(/\s+/g, " ").trim();
+          return isSizeWord(labelled) || isSizeWord(sizeText(control));
+        });
+        const selects = [...scope.querySelectorAll("select")].filter((select) => {
+          if (!(select instanceof HTMLSelectElement) || !visible(select) || !aligned(select)) return false;
+          return [...select.options].some((option) => isSizeWord(option.text.trim()));
+        });
+        const choice = buttons.length === 1 ? buttons[0] : buttons.length === 0 && selects.length === 1 ? selects[0] : null;
+        if (choice instanceof HTMLElement) {
+          choice.setAttribute("data-modal-size-target", "1");
+          return true;
+        }
+        scope = scope.parentElement;
+      }
+    }
+    return false;
+  }, label);
+}
+
+async function modalSizeControl(page: Page, label: string): Promise<Locator | null> {
+  const panel = await formatPanel(page);
+  if (await markModalSize(panel, label)) return panel.locator("[data-modal-size-target='1']").first();
+  const body = page.locator("body");
+  if (await markModalSize(body, label)) return body.locator("[data-modal-size-target='1']").first();
+  return null;
+}
+
+async function chooseModalSize(page: Page, label: string, value: string, word: string): Promise<void> {
+  let control: Locator | null = null;
+  const deadline = Date.now() + 2000;
+  while (Date.now() < deadline) {
+    control = await modalSizeControl(page, label);
+    if (control) break;
+    await page.waitForTimeout(100);
+  }
+  if (!control) fail(`${label} control was not found.`);
+  const tag = await control.evaluate((el) => el.tagName.toLowerCase());
+  if (tag === "select") {
+    const current = await control.inputValue();
+    if (current === value || current === word) return;
+    const chosen = await control.evaluate((el, wanted) => {
+      if (!(el instanceof HTMLSelectElement)) return "";
+      const options = [...el.options];
+      const match =
+        options.find((option) => option.value === wanted.value) ??
+        options.find((option) => option.text.trim() === wanted.word);
+      return match?.value ?? "";
+    }, { value, word });
+    if (!chosen) fail(`Option ${word} was not found.`);
+    await control.selectOption(chosen);
+    return;
+  }
+  try {
+    await control.waitFor({ state: "visible", timeout: 5000 });
+  } catch {
+    fail(`${label} control was not found.`);
+  }
+  const current = ((await control.innerText()) || "").replace(/\s+/g, " ").trim();
+  if (current === word) return;
+  await control.click();
+  const option = page.getByRole("option", { name: word, exact: true });
+  const appeared = await option
+    .first()
+    .waitFor({ state: "visible", timeout: 1500 })
+    .then(() => true)
+    .catch(() => false);
+  if (appeared) await option.first().click();
+  else if (!(await selectNearby(control, word))) {
+    const byValue = page.locator(`[role="option"][data-value="${value}"]`);
+    if ((await byValue.count()) < 1) fail(`Option ${word} was not found.`);
+    await byValue.first().click();
+  }
+  try {
+    await page.waitForFunction(
+      ({ fieldLabel, wanted, stored }) => {
+        const ownText = (el: Element) =>
+          [...el.childNodes]
+            .filter((child) => child.nodeType === Node.TEXT_NODE)
+            .map((child) => child.textContent || "")
+            .join("")
+            .replace(/\s+/g, " ")
+            .trim();
+        const visible = (el: Element) => {
+          if (!(el instanceof HTMLElement)) return false;
+          const rect = el.getBoundingClientRect();
+          return rect.width > 0 && rect.height > 0;
+        };
+        const labels = [...document.querySelectorAll("*")].filter((el) => ownText(el) === fieldLabel && visible(el));
+        for (const marked of labels) {
+          let scope: HTMLElement | null = marked.parentElement;
+          for (let depth = 0; depth < 6 && scope; depth += 1) {
+            const select = scope.querySelector("select");
+            if (select instanceof HTMLSelectElement && (select.value === stored || select.value === wanted)) return true;
+            const button = [...scope.querySelectorAll("button, [role='combobox']")].find((el) => {
+              const text = (el.textContent || "").replace(/\s+/g, " ").trim();
+              return text === wanted;
+            });
+            if (button && visible(button)) return true;
+            scope = scope.parentElement;
+          }
+        }
+        return false;
+      },
+      { fieldLabel: label, wanted: word, stored: value },
+      { timeout: 3000 },
+    );
+  } catch {
+    const after = ((await control.innerText()) || "").replace(/\s+/g, " ").trim();
+    fail(`${label} is ${JSON.stringify(after)}, wanted ${word}.`);
+  }
+}
+
 async function formatErrorModal(page: Page, header: string): Promise<void> {
   await openPageFormat(page);
-  await chooseCombobox(page, /width/i, "xSmall", "Extra small");
-  await chooseCombobox(page, /spacing/i, "medium", "Medium");
+  if (!(await modalSizeControl(page, "Width"))) {
+    const named = page.getByRole("button", { name: "Modal style", exact: true });
+    let collapsed = (await named.count()) === 0;
+    if (!collapsed) {
+      const button = await rightmost(named, "Modal style disclosure was not found.");
+      const state = await button.getAttribute("data-collapsed");
+      const expanded = await button.getAttribute("aria-expanded");
+      collapsed = state === "true" || expanded === "false";
+    }
+    if (collapsed) await openDisclosure(page, "Modal style");
+  }
+  await chooseModalSize(page, "Width", "xSmall", "Extra small");
+  await chooseModalSize(page, "Spacing", "medium", "Medium");
   await ensureOn(page, "Padding");
   await ensureOn(page, "Element gap");
   await openDisclosure(page, "Footer");
@@ -3591,23 +3886,65 @@ async function writeSentence(page: Page, id: string, sentence: string): Promise<
   if (after !== sentence) fail(`Sentence is ${JSON.stringify(after)}, wanted ${JSON.stringify(sentence)}.`);
 }
 
+async function frameClickPosition(host: Locator): Promise<{ x: number; y: number }> {
+  return host.evaluate((node) => {
+    if (!(node instanceof HTMLElement)) return { x: 24, y: 24 };
+    const box = node.getBoundingClientRect();
+    if (box.width <= 0 || box.height <= 0) return { x: 24, y: 24 };
+    const clamp = (x: number, y: number) => ({
+      x: Math.min(Math.max(x, 0), Math.max(box.width - 1, 0)),
+      y: Math.min(Math.max(y, 0), Math.max(box.height - 1, 0)),
+    });
+    const onHandle = (x: number, y: number) => {
+      const hit = document.elementFromPoint(box.left + x, box.top + y);
+      if (!(hit instanceof Element)) return false;
+      return hit.closest('[data-testid="resizer_topLeft"]') !== null;
+    };
+    const large = box.width > 24 && box.height > 24;
+    const preferred = clamp(large ? 24 : box.width / 2, large ? 24 : box.height / 2);
+    if (!onHandle(preferred.x, preferred.y)) return preferred;
+    const away = [
+      clamp(box.width / 2, box.height / 2),
+      clamp(Math.max(box.width - 4, 0), box.height / 2),
+      clamp(box.width / 2, Math.max(box.height - 4, 0)),
+      clamp(Math.max(box.width - 4, 0), Math.max(box.height - 4, 0)),
+    ];
+    for (const point of away) {
+      if (!onHandle(point.x, point.y)) return point;
+    }
+    const handle = node.querySelector('[data-testid="resizer_topLeft"]') ?? document.querySelector('[data-testid="resizer_topLeft"]');
+    if (handle instanceof HTMLElement) {
+      const rect = handle.getBoundingClientRect();
+      const past = clamp(rect.right - box.left + 4, rect.bottom - box.top + 4);
+      if (!onHandle(past.x, past.y)) return past;
+    }
+    return clamp(Math.max(box.width - 1, 0), Math.max(box.height - 1, 0));
+  });
+}
+
 async function selectFrame(page: Page, id: string, label: string): Promise<void> {
-  const host = page.locator(`[data-testid="element-${id}"]`);
+  const host = page.locator(`[data-testid="element_${id}"], [data-testid="element-${id}"]`).first();
   try {
     await host.waitFor({ state: "attached", timeout: 5000 });
   } catch {
     fail(`${label}: element-${id} is not on the page.`);
   }
-  await host.click({ position: { x: 2, y: 2 } });
-  const editing = await page.evaluate(() => {
-    const active = document.activeElement;
-    return active instanceof HTMLElement && (active.isContentEditable || !!active.closest("[contenteditable='true']"));
-  });
-  if (editing) {
-    await page.keyboard.press("Escape");
-    const handle = page.locator(`[data-testid="selection_resizers_container_${id}"]`).getByRole("button", { name: /drag/i });
-    if ((await handle.count()) > 0) await handle.first().click();
-    else await host.click({ position: { x: 2, y: 2 } });
+  const selected = page.locator(`[data-testid="selection_resizers_container_${id}"]`);
+  const clickHost = async () => {
+    await host.scrollIntoViewIfNeeded().catch(() => undefined);
+    const position = await frameClickPosition(host);
+    await host.click({ position, force: true });
+  };
+  if ((await selected.count()) < 1) {
+    await clickHost();
+    const editing = await page.evaluate(() => {
+      const active = document.activeElement;
+      return active instanceof HTMLElement && (active.isContentEditable || !!active.closest("[contenteditable='true']"));
+    });
+    if (editing) {
+      await page.keyboard.press("Escape");
+      if ((await selected.count()) < 1) await clickHost();
+    }
   }
   await confirmSelected(page, id, label);
 }
@@ -3672,49 +4009,124 @@ async function paintWarning(page: Page, id: string): Promise<void> {
   const fill = page.getByRole("button", { name: /^fill color$/i });
   if ((await fill.count()) < 1) fail("Fill color was not found.");
   await fill.first().click();
-  const named = page.getByRole("button", { name: /^warning$/i });
-  const option = page.getByRole("option", { name: /^warning$/i });
-  if ((await named.count()) > 0) await named.first().click();
-  else if ((await option.count()) > 0) await option.first().click();
-  else {
-    const point = await page.evaluate((warning) => {
+  const marked = await page.evaluate((themeWarning) => {
+    document.querySelectorAll("[data-warning-swatch]").forEach((el) => el.removeAttribute("data-warning-swatch"));
+    const isHelp = (node: Element) =>
+      node.closest("[data-phi-help-icon]") !== null || node.querySelector("[data-phi-help-icon]") !== null;
+    const same = (color: string) => {
+      const left = color.replace(/\s+/g, "").toLowerCase();
+      const right = themeWarning.replace(/\s+/g, "").toLowerCase();
+      return left === right || left === "rgba(196,78,12,1)";
+    };
+    const root = [...document.querySelectorAll('[role="dialog"]')].at(-1) ?? document.body;
+    const matches = [...root.querySelectorAll("*")].filter((node): node is HTMLElement => {
+      if (!(node instanceof HTMLElement) || isHelp(node)) return false;
+      const rect = node.getBoundingClientRect();
+      if (rect.width < 8 || rect.width > 48 || rect.height < 8 || rect.height > 48) return false;
+      return same(getComputedStyle(node).backgroundColor);
+    });
+    matches.sort((a, b) => {
+      const left = a.getBoundingClientRect();
+      const right = b.getBoundingClientRect();
+      return left.width * left.height - right.width * right.height;
+    });
+    let swatch: HTMLElement | undefined = matches[0];
+    if (!swatch) return false;
+    const owner = swatch.closest("button, [role='button'], [role='option']");
+    if (owner instanceof HTMLElement && !isHelp(owner)) {
+      const rect = owner.getBoundingClientRect();
+      if (rect.width <= 64 && rect.height <= 64) swatch = owner;
+    }
+    if (isHelp(swatch)) return false;
+    swatch.setAttribute("data-warning-swatch", "1");
+    return true;
+  }, THEME_WARNING);
+  if (marked) {
+    await page.locator("[data-warning-swatch='1']").click({ force: true });
+  } else {
+    const point = await page.evaluate((themeWarning) => {
+      const isHelp = (node: Element) =>
+        node.closest("[data-phi-help-icon]") !== null || node.querySelector("[data-phi-help-icon]") !== null;
       const dialog = [...document.querySelectorAll('[role="dialog"]')].at(-1) ?? document.body;
       for (const node of dialog.querySelectorAll("*")) {
-        if (!(node instanceof HTMLElement)) continue;
-        const label = `${node.getAttribute("aria-label") || ""} ${node.getAttribute("title") || ""}`.trim();
-        if (/^warning$/i.test(label)) {
-          const rect = node.getBoundingClientRect();
+        if (!(node instanceof HTMLElement) || isHelp(node)) continue;
+        const rect = node.getBoundingClientRect();
+        if (rect.width < 8 || rect.width > 48 || rect.height < 8 || rect.height > 48) continue;
+        const bg = getComputedStyle(node).backgroundColor.replace(/\s+/g, "").toLowerCase();
+        if (bg === themeWarning.replace(/\s+/g, "").toLowerCase() || bg === "rgba(196,78,12,1)") {
           return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
         }
       }
-      for (const node of dialog.querySelectorAll("*")) {
-        if (!(node instanceof HTMLElement)) continue;
-        const rect = node.getBoundingClientRect();
-        if (rect.width < 8 || rect.width > 40 || rect.height < 8 || rect.height > 40) continue;
-        if (getComputedStyle(node).backgroundColor === warning) {
-          return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
+      const label = [...dialog.querySelectorAll("*")].find((el) => {
+        if (isHelp(el)) return false;
+        const own = [...el.childNodes]
+          .filter((child) => child.nodeType === Node.TEXT_NODE)
+          .map((child) => child.textContent || "")
+          .join("")
+          .trim();
+        return own === "Theme palette";
+      });
+      if (label instanceof HTMLElement) {
+        const top = label.getBoundingClientRect().bottom;
+        for (const node of dialog.querySelectorAll("div")) {
+          if (!(node instanceof HTMLElement) || isHelp(node)) continue;
+          const rect = node.getBoundingClientRect();
+          if (rect.width < 12 || rect.width > 28 || rect.height < 12 || rect.height > 28) continue;
+          if (rect.top < top || rect.top > top + 40) continue;
+          if (getComputedStyle(node).cursor !== "pointer") continue;
+          const match = getComputedStyle(node).backgroundColor.match(/^rgb\((\d+), (\d+), (\d+)\)$/);
+          if (!match) continue;
+          const red = Number(match[1]);
+          const green = Number(match[2]);
+          const blue = Number(match[3]);
+          if (red > 150 && green > 40 && green < 130 && blue < 40) {
+            return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
+          }
         }
       }
       return null;
-    }, WARNING);
-    if (!point) fail("Warning swatch was not found.");
-    await page.mouse.click(point.x, point.y);
+    }, THEME_WARNING);
+    if (point) {
+      await page.mouse.click(point.x, point.y);
+    } else {
+      const named = page.getByRole("button", { name: /^warning$/i });
+      const option = page.getByRole("option", { name: /^warning$/i });
+      let namedIndex = -1;
+      const namedCount = await named.count();
+      for (let index = 0; index < namedCount; index += 1) {
+        const button = named.nth(index);
+        const help =
+          (await button.getAttribute("data-phi-help-icon")) !== null ||
+          (await button.locator("[data-phi-help-icon]").count()) > 0;
+        if (help) continue;
+        namedIndex = index;
+        break;
+      }
+      const choice = (await option.count()) > 0 ? option.first() : null;
+      const choiceIsHelp = choice
+        ? (await choice.getAttribute("data-phi-help-icon")) !== null ||
+          (await choice.locator("[data-phi-help-icon]").count()) > 0
+        : true;
+      if (namedIndex >= 0) await named.nth(namedIndex).click();
+      else if (choice && !choiceIsHelp) await choice.click();
+      else fail("Warning swatch was not found.");
+    }
   }
   await page.keyboard.press("Escape");
   await page.waitForTimeout(300);
   const painted = await page.evaluate(
-    ({ elementId, warning }) => {
+    ({ elementId, warning, themeWarning }) => {
       const host = document.querySelector(`[data-selectable="${elementId}"]`);
       if (!(host instanceof HTMLElement)) return "";
       for (const node of [host, ...host.querySelectorAll("*")]) {
         if (!(node instanceof HTMLElement)) continue;
-        if (getComputedStyle(node).backgroundColor === warning) return warning;
+        if (getComputedStyle(node).backgroundColor === warning || getComputedStyle(node).backgroundColor === themeWarning) return warning;
         const style = node.getAttribute("style") || "";
-        if (style.includes("--colors-warningFill") || /ee8a2b/i.test(style)) return "warningFill";
+        if (style.includes("--colors-warningFill") || /ee8a2b/i.test(style) || /c44e0c/i.test(style)) return "warningFill";
       }
       return "";
     },
-    { elementId: id, warning: WARNING },
+    { elementId: id, warning: WARNING, themeWarning: THEME_WARNING },
   );
   if (!painted) fail("Button fill is not Warning.");
 }

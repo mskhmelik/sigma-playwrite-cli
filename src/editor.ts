@@ -58,6 +58,11 @@ export type Editor = {
     modal: string,
     formula: string,
   ): Promise<void>;
+  /**
+   * On click, one If / else-if chain. Each branch matches `control` to its value.
+   * An empty branch is still created. A second effect stays on that same branch.
+   */
+  setWhen(button: string, control: string, branches: WhenBranch[]): Promise<void>;
   publish(): Promise<void>;
   /** Format the open modal page: extra-small width, footer off, header title, no close icon. */
   styleModalPage(header: string): Promise<void>;
@@ -134,6 +139,13 @@ export type InsertValue =
   | { column: string; kind: "control"; control: string }
   | { column: string; kind: "static"; value: string }
   | { column: string; kind: "formula"; formula: string };
+
+export type WhenEffect =
+  | { kind: "navigate"; destination: string }
+  | { kind: "open-drawer"; modal: string }
+  | { kind: "empty" };
+
+export type WhenBranch = { value: string; effects: WhenEffect[] };
 
 export type ValueSource =
   | { kind: "static"; text: string }
